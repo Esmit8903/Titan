@@ -89,6 +89,54 @@ jobs:
               ' "$F" > tmp && mv tmp "$F"
             fi
           done
+          - name: Add Compose/Kotlin opt-in flags
+           run: |
+          APP="$PROJECT_DIR/app"
+          for F in "$APP/build.gradle" "$APP/build.gradle.kts"; do
+            [ -f "$F" ] || continue
+            # Ensure kotlinOptions block exists in android { } and force jvmTarget 17
+            if ! grep -q "kotlinOptions" "$F"; then
+              awk '
+                BEGIN{ins=0}
+                /android *\{/ && ins==0 { print; print "    kotlinOptions {"; 
+                                           print "        jvmTarget = \"17\"";
+                                           print "        freeCompilerArgs += [";
+                                           print "            \"-opt-in=androidx.compose.material3.ExperimentalMaterial3Api\",";
+                                           print "            \"-opt-in=androidx.compose.material.ExperimentalMaterialApi\",";
+                                           print "            \"-opt-in=androidx.compose.animation.ExperimentalAnimationApi\",";
+                                           print "            \"-opt-in=androidx.compose.foundation.ExperimentalFoundationApi\",";
+                                           print "            \"-opt-in=kotlinx.coroutines.ExperimentalCoroutinesApi\",";
+                                           print "            \"-opt-in=kotlinx.coroutines.FlowPreview\"";
+                                           print "        ]";
+                                           print "    }"; 
+                                           ins=1; next }
+                { print }
+              ' "$F" > tmp && mv tmp "$F"
+            else
+              # Make sure jvmTarget is 17
+              sed -i 's/jvmTarget *= *["'\''"][0-9]*["'\''"]/jvmTarget = "17"/g' "$F"
+              # Inject/merge flags if not present
+              if ! grep -q "ExperimentalMaterial3Api" "$F"; then
+                awk '
+                  BEGIN{inKO=0; done=0}
+                  /kotlinOptions *\{/ {inKO=1}
+                  inKO && /}/ && done==0 {
+                    print "        freeCompilerArgs += [";
+                    print "            \"-opt-in=androidx.compose.material3.ExperimentalMaterial3Api\",";
+                    print "            \"-opt-in=androidx.compose.material.ExperimentalMaterialApi\",";
+                    print "            \"-opt-in=androidx.compose.animation.ExperimentalAnimationApi\",";
+                    print "            \"-opt-in=androidx.compose.foundation.ExperimentalFoundationApi\",";
+                    print "            \"-opt-in=kotlinx.coroutines.ExperimentalCoroutinesApi\",";
+                    print "            \"-opt-in=kotlinx.coroutines.FlowPreview\"";
+                    print "        ]";
+                    done=1
+                  }
+                  { print }
+                  /}/ && inKO { inKO=0 }
+                ' "$F" > tmp && mv tmp "$F"
+              fi
+            fi
+          done
       - name: Build Debug APK
         run: |
           set -e
