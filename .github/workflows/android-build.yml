@@ -35,21 +35,16 @@ jobs:
           unzip -q gradle.zip -d $HOME/gradle
           echo "$HOME/gradle/gradle-8.7/bin" >> $GITHUB_PATH
 
-      # 👉 Inject Java 17 + Kotlin toolchain into the unzipped project
-    
-          - name: Patch Gradle for Java 17 (safe ASCII)
+      - name: Patch Gradle for Java 17 (safe ASCII)
         run: |
           FILE="TitanApp/app/build.gradle"
           if [ -f "$FILE" ]; then
-            # Strip any non-ASCII chars that may have slipped in
             LC_ALL=C tr -cd '\11\12\15\40-\176' < "$FILE" > "$FILE.clean" && mv "$FILE.clean" "$FILE"
-
-            # Ensure compileOptions inside android { }
             if ! grep -q "compileOptions" "$FILE"; then
               awk '
                 BEGIN{added=0}
                 /composeOptions/ && added==0 {
-                  print; 
+                  print;
                   print "    compileOptions {";
                   print "        sourceCompatibility JavaVersion.VERSION_17";
                   print "        targetCompatibility JavaVersion.VERSION_17";
@@ -59,17 +54,12 @@ jobs:
                 {print}
               ' "$FILE" > tmp && mv tmp "$FILE"
             else
-              # Normalize any smart quotes or weird chars on those lines
               sed -i "s/JavaVersion[^0-9]*VERSION_17/JavaVersion.VERSION_17/g" "$FILE"
             fi
-
-            # Add Kotlin toolchain at top-level if missing
             if ! grep -q "jvmToolchain(17)" "$FILE"; then
               printf '\n// Injected by CI\nkotlin {\n  jvmToolchain(17)\n}\n' >> "$FILE"
             fi
           fi
-
-          # Clean manifest package attribute (optional)
           MAN="TitanApp/app/src/main/AndroidManifest.xml"
           if [ -f "$MAN" ]; then
             sed -i 's/^\s*<manifest\s\+xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android"\s\+package="[^"]*">/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">/' "$MAN" || true
@@ -79,15 +69,6 @@ jobs:
         run: |
           gradle -v
           gradle -p TitanApp --no-daemon assembleDebug
-      - name: Build Debug APK
-        run: |
-          gradle -v
-          gradle -p TitanApp --no-daemon assembleDebug
-
-      - name: Build Debug APK
-        run: |
-          gradle -v
-          gradle -p TitanApp assembleDebug
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
