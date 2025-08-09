@@ -38,54 +38,26 @@ jobs:
           echo "PROJECT_DIR=$D" >> $GITHUB_ENV
           echo "Detected PROJECT_DIR=$D"
 
-      # ---- THIS STEP writes a valid Gradle settings file without YAML conflicts ----
+      # ---- Write Gradle settings without heredocs (base64 avoids YAML issues on mobile) ----
       - name: Write Gradle settings (groovy OR kts)
         shell: bash
         run: |
           set -e
           ROOT="$PROJECT_DIR"
 
+          # Kotlin DSL (settings.gradle.kts)
+          KTS_B64="cGx1Z2luTWFuYWdlbWVudCB7CiAgICByZXBvc2l0b3JpZXMgewogICAgICAgIGdyYWRsZVBsdWdpblBvcnRhbCgpCiAgICAgICAgZ29vZ2xlKCkKICAgICAgICBtYXZlbkNlbnRyYWwoKQogICAgfQp9CmRlcGVuZGVuY3lSZXNvbHV0aW9uTWFuYWdlbWVudCB7CiAgICByZXBvc2l0b3JpZXNNb2RlLnNldChSZXBvc2l0b3JpZXNNb2RlLkZBSUxfT05fUFJPSkVDVF9SRVBPUykKICAgIHJlcG9zaXRvcmllcyB7CiAgICAgICAgZ29vZ2xlKCkKICAgICAgICBtYXZlbkNlbnRyYWwoKQogICAgfQp9CnJvb3RQcm9qZWN0Lm5hbWUgPSAiVGl0YW5BcHAiCmluY2x1ZGUoIjphcHAiKQo="
+
+          # Groovy DSL (settings.gradle)
+          GRV_B64="cGx1Z2luTWFuYWdlbWVudCB7CiAgICByZXBvc2l0b3JpZXMgewogICAgICAgIGdyYWRsZVBsdWdpblBvcnRhbCgpCiAgICAgICAgZ29vZ2xlKCkKICAgICAgICBtYXZlbkNlbnRyYWwoKQogICAgfQp9CmRlcGVuZGVuY3lSZXNvbHV0aW9uTWFuYWdlbWVudCB7CiAgICByZXBvc2l0b3JpZXNNb2RlLnNldChSZXBvc2l0b3JpZXNNb2RlLkZBSUxfT05fUFJPSkVDVF9SRVBPUykKICAgIHJlcG9zaXRvcmllcyB7CiAgICAgICAgZ29vZ2xlKCkKICAgICAgICBtYXZlbkNlbnRyYWwoKQogICAgfQp9CnJvb3RQcm9qZWN0Lm5hbWUgPSAiVGl0YW5BcHAiCmluY2x1ZGUoIjphcHAiKQo="
+
           if [ -f "$ROOT/settings.gradle.kts" ]; then
-            # Kotlin DSL
-            cat > "$ROOT/settings.gradle.kts" <<'EOF'
-pluginManagement {
-    repositories {
-        gradlePluginPortal()
-        google()
-        mavenCentral()
-    }
-}
-dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
-rootProject.name = "TitanApp"
-include(":app")
-EOF
+            echo "$KTS_B64" | base64 -d > "$ROOT/settings.gradle.kts"
           else
-            # Groovy DSL
-            cat > "$ROOT/settings.gradle" <<'EOF'
-pluginManagement {
-    repositories {
-        gradlePluginPortal()
-        google()
-        mavenCentral()
-    }
-}
-dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
-rootProject.name = "TitanApp"
-include(":app")
-EOF
+            echo "$GRV_B64" | base64 -d > "$ROOT/settings.gradle"
           fi
+
+          echo "Wrote Gradle settings in $ROOT"
 
       - name: Force Java/Kotlin 17 across modules
         shell: bash
@@ -93,21 +65,21 @@ EOF
           set -e
           mapfile -t FILES < <(find "$PROJECT_DIR" -maxdepth 4 -type f \( -name 'build.gradle' -o -name 'build.gradle.kts' \))
           for F in "${FILES[@]}"; do
-            # sanitize any non-ascii that might have slipped in from the ZIP
+            # sanitize non-ascii
             LC_ALL=C tr -cd '\11\12\15\40-\176' < "$F" > "$F.clean" && mv "$F.clean" "$F"
 
-            # Upgrade Java compat (Groovy + Kotlin DSL)
+            # upgrade Java / Kotlin targets
             sed -i 's/JavaVersion\.VERSION_1_8/JavaVersion.VERSION_17/g' "$F"
             sed -i 's/sourceCompatibility *[:=][^A-Za-z0-9]*1\.8/sourceCompatibility JavaVersion.VERSION_17/g' "$F"
             sed -i 's/targetCompatibility *[:=][^A-Za-z0-9]*1\.8/targetCompatibility JavaVersion.VERSION_17/g' "$F"
             sed -i 's/jvmTarget *[:=] *["'\'']\?[0-9][0-9]*["'\'']\?/jvmTarget = "17"/g' "$F"
 
-            # Ensure android { compileOptions {..} } exists
+            # ensure compileOptions
             if grep -q "android *{" "$F" && ! grep -q "compileOptions" "$F"; then
               awk 'BEGIN{ins=0} /android *\{/ && ins==0 {print; print "    compileOptions {"; print "        sourceCompatibility JavaVersion.VERSION_17"; print "        targetCompatibility JavaVersion.VERSION_17"; print "    }"; ins=1; next} {print}' "$F" > tmp && mv tmp "$F"
             fi
 
-            # Ensure android { kotlinOptions {..} } exists
+            # ensure kotlinOptions
             if grep -q "android *{" "$F" && ! grep -q "kotlinOptions" "$F"; then
               awk 'BEGIN{ins=0} /android *\{/ && ins==0 {print; print "    kotlinOptions {"; print "        jvmTarget = \"17\""; print "    }"; ins=1; next} {print}' "$F" > tmp && mv tmp "$F"
             fi
