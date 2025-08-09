@@ -66,46 +66,31 @@ jobs:
           fi
 
       # ---- Safely force Java/Kotlin 17 if app/build.gradle(.kts) exists ----
-      - name: Force Java/Kotlin 17 in Gradle files (safe)
+      - name: Force Java/Kotlin 17 across all modules
         shell: bash
         run: |
           set -euo pipefail
-          APP="${PROJECT_DIR}/app"
-          GRADLE_FILE=""
-          if [[ -f "${APP}/build.gradle" ]]; then GRADLE_FILE="${APP}/build.gradle"; fi
-          if [[ -z "$GRADLE_FILE" && -f "${APP}/build.gradle.kts" ]]; then GRADLE_FILE="${APP}/build.gradle.kts"; fi
-          if [[ -z "$GRADLE_FILE" ]]; then
-            echo "No app/build.gradle(.kts) found. Skipping patch."
-            exit 0
-          fi
-          echo "Patching $GRADLE_FILE"
-          # normalize to ASCII (mobile editors sometimes add weird chars)
-          LC_ALL=C tr -cd '\11\12\15\40-\176' < "$GRADLE_FILE" > "$GRADLE_FILE.clean" && mv "$GRADLE_FILE.clean" "$GRADLE_FILE"
-          # swap any 1.8 -> 17
-          sed -i 's/JavaVersion\.VERSION_1_8/JavaVersion.VERSION_17/g' "$GRADLE_FILE"
-          sed -i 's/sourceCompatibility *=[^0-9A-Za-z]*1\.8/sourceCompatibility JavaVersion.VERSION_17/g' "$GRADLE_FILE"
-          sed -i 's/targetCompatibility *=[^0-9A-Za-z]*1\.8/targetCompatibility JavaVersion.VERSION_17/g' "$GRADLE_FILE"
-          sed -i 's/jvmTarget *= *["'\''"]\?1\.8["'\''"]\?/jvmTarget = "17"/g' "$GRADLE_FILE"
-          # ensure kotlinOptions exists with jvmTarget 17
-          if ! grep -q "kotlinOptions" "$GRADLE_FILE"; then
-            awk '
-              BEGIN{ins=0}
-              /android *\{/ && ins==0 { print; print "    kotlinOptions {"; print "        jvmTarget = \"17\""; print "    }"; ins=1; next }
-              { print }
-            ' "$GRADLE_FILE" > tmp && mv tmp "$GRADLE_FILE"
-          fi
-
-      # ---- Build ----
-      - name: Build Debug APK
-        shell: bash
-        run: |
-          set -e
-          if [ "$WRAPPER" = "1" ]; then
-            "$PROJECT_DIR/gradlew" -p "$PROJECT_DIR" --no-daemon assembleDebug
-          else
-            gradle -v
-            gradle -p "$PROJECT_DIR" --no-daemon assembleDebug
-          fi
+          echo "Searching for Gradle module files under: $PROJECT_DIR"
+          mapfile -t FILES < <(find "$PROJECT_DIR" -maxdepth 4 -type f \( -name "build.gradle" -o -name "build.gradle.kts" \))
+          echo "Found ${#FILES[@]} Gradle files"
+          for F in "${FILES[@]}"; do
+            echo "Patching $F"
+            # Normalize to ASCII
+            LC_ALL=C tr -cd '\11\12\15\40-\176' < "$F" > "$F.clean" && mv "$F.clean" "$F"
+            # Replace 1.8 -> 17 wherever it appears
+            sed -i 's/JavaVersion\.VERSION_1_8/JavaVersion.VERSION_17/g' "$F"
+            sed -i 's/sourceCompatibility *=[^0-9A-Za-z]*1\.8/sourceCompatibility JavaVersion.VERSION_17/g' "$F"
+            sed -i 's/targetCompatibility *=[^0-9A-Za-z]*1\.8/targetCompatibility JavaVersion.VERSION_17/g' "$F"
+            sed -i 's/jvmTarget *= *["'\''"]\?[0-9][0-9]*["'\''"]\?/jvmTarget = "17"/g' "$F"
+            # If android { } exists and compileOptions is missing, insert it
+            if grep -q "android *{" "$F" && ! grep -q "compileOptions" "$F"; then
+              awk 'BEGIN{ins=0} /android *\{/ && ins==0 {print; print "    compileOptions {"; print "        sourceCompatibility JavaVersion.VERSION_17"; print "        targetCompatibility JavaVersion.VERSION_17"; print "    }"; ins=1; next} {print}' "$F" > tmp && mv tmp "$F"
+            fi
+            # Ensure kotlinOptions with jvmTarget 17 exists inside android { }
+            if grep -q "android *{" "$F" && ! grep -q "kotlinOptions" "$F"; then
+              awk 'BEGIN{ins=0} /android *\{/ && ins==0 {print; print "    kotlinOptions {"; print "        jvmTarget = \"17\""; print "    }"; ins=1; next} {print}' "$F" > tmp && mv tmp "$F"
+            fi
+          done
 
       # ---- Upload whatever debug APK we find ----
       - name: Upload APK artifact
