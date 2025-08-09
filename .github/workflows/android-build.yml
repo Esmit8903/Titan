@@ -38,7 +38,7 @@ jobs:
       # 👉 Inject Java 17 + Kotlin toolchain into the unzipped project
     
           - name: Patch Gradle for Java 17 (safe ASCII)
-        run: 
+        run: |
           FILE="TitanApp/app/build.gradle"
           if [ -f "$FILE" ]; then
             # Strip any non-ASCII chars that may have slipped in
@@ -75,6 +75,10 @@ jobs:
             sed -i 's/^\s*<manifest\s\+xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android"\s\+package="[^"]*">/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">/' "$MAN" || true
           fi
 
+      - name: Build Debug APK
+        run: |
+          gradle -v
+          gradle -p TitanApp --no-daemon assembleDebug
       - name: Build Debug APK
         run: |
           gradle -v
