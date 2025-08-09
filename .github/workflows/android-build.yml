@@ -51,7 +51,44 @@ jobs:
             unzip -q gradle.zip -d $HOME/gradle
             echo "$HOME/gradle/gradle-8.7/bin" >> $GITHUB_PATH
           fi
+      - name: Force Java/Kotlin 17 in Gradle files
+        run: |
+          APP="$PROJECT_DIR/app"
+          # Work on Groovy or Kotlin scripts
+          for F in "$APP/build.gradle" "$APP/build.gradle.kts"; do
+            [ -f "$F" ] || continue
+            # Normalize file to ASCII
+            LC_ALL=C tr -cd '\11\12\15\40-\176' < "$F" > "$F.clean" && mv "$F.clean" "$F"
 
+            # 1) Replace any existing 1.8 settings -> 17
+            sed -i 's/JavaVersion\.VERSION_1_8/JavaVersion.VERSION_17/g' "$F"
+            sed -i 's/sourceCompatibility *= *["'\'']\?1\.8["'\'']\?/sourceCompatibility JavaVersion.VERSION_17/g' "$F"
+            sed -i 's/targetCompatibility *= *["'\'']\?1\.8["'\'']\?/targetCompatibility JavaVersion.VERSION_17/g' "$F"
+            sed -i 's/jvmTarget *= *["'\'']\?1\.8["'\'']\?/jvmTarget = "17"/g' "$F"
+
+            # 2) Ensure compileOptions exists inside android { }
+            if ! grep -q "compileOptions" "$F"; then
+              awk '
+                BEGIN{ins=0}
+                /android *\{/ && ins==0 { print; print "    compileOptions {";
+                                           print "        sourceCompatibility JavaVersion.VERSION_17";
+                                           print "        targetCompatibility JavaVersion.VERSION_17";
+                                           print "    }"; ins=1; next }
+                { print }
+              ' "$F" > tmp && mv tmp "$F"
+            fi
+
+            # 3) Ensure kotlinOptions exists with jvmTarget 17 inside android { }
+            if ! grep -q "kotlinOptions" "$F"; then
+              awk '
+                BEGIN{ins=0}
+                /android *\{/ && ins==0 { print; print "    kotlinOptions {";
+                                           print "        jvmTarget = \"17\"";
+                                           print "    }"; ins=1; next }
+                { print }
+              ' "$F" > tmp && mv tmp "$F"
+            fi
+          done
       - name: Build Debug APK
         run: |
           set -e
