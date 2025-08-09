@@ -35,11 +35,14 @@ jobs:
           unzip -q gradle.zip -d $HOME/gradle
           echo "$HOME/gradle/gradle-8.7/bin" >> $GITHUB_PATH
 
-      - name: Patch Gradle for Java 17 (safe ASCII)
+      - name: Patch Gradle for Java 17 + Compose opt-ins
         run: |
           FILE="TitanApp/app/build.gradle"
           if [ -f "$FILE" ]; then
+            # sanitize file to plain ASCII
             LC_ALL=C tr -cd '\11\12\15\40-\176' < "$FILE" > "$FILE.clean" && mv "$FILE.clean" "$FILE"
+
+            # ensure compileOptions in android{}
             if ! grep -q "compileOptions" "$FILE"; then
               awk '
                 BEGIN{added=0}
@@ -56,10 +59,34 @@ jobs:
             else
               sed -i "s/JavaVersion[^0-9]*VERSION_17/JavaVersion.VERSION_17/g" "$FILE"
             fi
+
+            # ensure kotlinOptions jvmTarget + opt-in
+            if ! grep -q "kotlinOptions" "$FILE"; then
+              awk '
+                BEGIN{added=0}
+                /composeOptions/ && added==0 {
+                  print;
+                  print "    kotlinOptions {";
+                  print "        jvmTarget = \"17\"";
+                  print "        freeCompilerArgs += [\"-opt-in=androidx.compose.material3.ExperimentalMaterial3Api\"]";
+                  print "    }";
+                  added=1; next
+                }
+                {print}
+              ' "$FILE" > tmp && mv tmp "$FILE"
+            else
+              # add opt-in if kotlinOptions exists
+              sed -i "/kotlinOptions *{/a\ \ \ \ \ \ \ \ freeCompilerArgs += [\"-opt-in=androidx.compose.material3.ExperimentalMaterial3Api\"]" "$FILE" || true
+              sed -i "s/jvmTarget *= *['\"][0-9]*['\"]/jvmTarget = \"17\"/g" "$FILE"
+            fi
+
+            # add Kotlin toolchain at top level if missing
             if ! grep -q "jvmToolchain(17)" "$FILE"; then
               printf '\n// Injected by CI\nkotlin {\n  jvmToolchain(17)\n}\n' >> "$FILE"
             fi
           fi
+
+          # clean manifest package attr (optional)
           MAN="TitanApp/app/src/main/AndroidManifest.xml"
           if [ -f "$MAN" ]; then
             sed -i 's/^\s*<manifest\s\+xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android"\s\+package="[^"]*">/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">/' "$MAN" || true
