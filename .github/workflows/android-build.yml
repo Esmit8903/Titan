@@ -29,12 +29,31 @@ jobs:
       - name: Install SDK components
         run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      # NEW: Download and use Gradle directly (no wrapper in repo)
       - name: Download Gradle 8.7
         run: |
           curl -L -o gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
           unzip -q gradle.zip -d $HOME/gradle
           echo "$HOME/gradle/gradle-8.7/bin" >> $GITHUB_PATH
+
+      # 👉 Inject Java 17 + Kotlin toolchain into the unzipped project
+      - name: Patch Gradle for Java 17
+        run: |
+          FILE="TitanApp/app/build.gradle"
+          if [ -f "$FILE" ]; then
+            # add compileOptions if missing
+            if ! grep -q "compileOptions" "$FILE"; then
+              awk '1; /composeOptions/ && !x {print "  compileOptions {\\n    sourceCompatibility JavaVersion.VERSION_17\\n    targetCompatibility JavaVersion.VERSION_17\\n  }"; x=1}' "$FILE" > tmp && mv tmp "$FILE"
+            fi
+            # add kotlin toolchain if missing
+            if ! grep -q "jvmToolchain(17)" "$FILE"; then
+              printf "\n// Injected by CI\nkotlin {\n  jvmToolchain(17)\n}\n" >> "$FILE"
+            fi
+          fi
+          # tidy manifest package attribute (optional)
+          MAN="TitanApp/app/src/main/AndroidManifest.xml"
+          if [ -f "$MAN" ]; then
+            sed -i 's/^\s*<manifest\s\+xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android"\s\+package="[^"]*">/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">/' "$MAN" || true
+          fi
 
       - name: Build Debug APK
         run: |
