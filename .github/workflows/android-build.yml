@@ -29,19 +29,17 @@ jobs:
       - name: Install SDK components
         run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      # Detect Android project directory
       - name: Detect Android project dir
         shell: bash
         run: |
           set -e
-          D=$(dirname $(find TitanApp -maxdepth 3 -name "settings.gradle*" -print -quit || true))
+          D=$(dirname "$(find TitanApp -maxdepth 3 -name "settings.gradle*" -print -quit || true)")
           if [ -z "$D" ] || [ "$D" = "." ]; then
             D=$(find TitanApp -maxdepth 4 -type d -path "*/app" -print -quit | sed 's#/app$##')
           fi
           echo "PROJECT_DIR=$D" | tee -a $GITHUB_ENV
           test -n "$D" && echo "Detected PROJECT_DIR=$D"
 
-      # Show layout (helps debug paths)
       - name: Print project tree (debug)
         shell: bash
         run: |
@@ -50,6 +48,8 @@ jobs:
           ls -la "$PROJECT_DIR/app" || true
           echo "Gradle build files:"
           find "$PROJECT_DIR" -maxdepth 4 -type f -name "build.gradle*" -print || true
+          echo "Settings file(s):"
+          ls -la "$PROJECT_DIR"/settings.gradle* || true
 
       - name: Use Gradle wrapper if available, else download Gradle 8.7
         shell: bash
@@ -64,14 +64,82 @@ jobs:
             echo "$HOME/gradle/gradle-8.7/bin" >> $GITHUB_PATH
           fi
 
-      # Force Java/Kotlin 17 across all modules
+      #######################################################################
+      # Normalize settings.gradle/settings.gradle.kts (repositories + include)
+      #######################################################################
+      - name: Normalize settings.gradle / settings.gradle.kts
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_NAME="TitanApp"
+          ROOT="$PROJECT_DIR"
+          APP_DIR="$PROJECT_DIR/app"
+
+          if [ ! -d "$APP_DIR" ]; then
+            echo "::error::App module not found at $APP_DIR"
+            exit 1
+          fi
+
+          if [ -f "$ROOT/settings.gradle.kts" ]; then
+            echo "Backing up existing settings.gradle.kts"
+            cp "$ROOT/settings.gradle.kts" "$ROOT/settings.gradle.kts.bak" || true
+            cat > "$ROOT/settings.gradle.kts" <<'EOF'
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        google()
+        mavenCentral()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = "TitanApp"
+include(":app")
+EOF
+          else
+            # Groovy by default
+            echo "Backing up existing settings.gradle (if any)"
+            [ -f "$ROOT/settings.gradle" ] && cp "$ROOT/settings.gradle" "$ROOT/settings.gradle.bak" || true
+            cat > "$ROOT/settings.gradle" <<'EOF'
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        google()
+        mavenCentral()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = "TitanApp"
+include(":app")
+EOF
+          fi
+
+          echo "Final settings file content:"
+          echo "-----"
+          [ -f "$ROOT/settings.gradle.kts" ] && sed -n '1,200p' "$ROOT/settings.gradle.kts" || true
+          [ -f "$ROOT/settings.gradle" ] && sed -n '1,200p' "$ROOT/settings.gradle" || true
+          echo "-----"
+
+      ########################################################
+      # Force Java/Kotlin 17 across all modules (safe sweeper)
+      ########################################################
       - name: Force Java/Kotlin 17 across all modules
         shell: bash
         run: |
           set -euo pipefail
-          echo "Searching for Gradle module files under: $PROJECT_DIR"
           mapfile -t FILES < <(find "$PROJECT_DIR" -maxdepth 4 -type f \( -name "build.gradle" -o -name "build.gradle.kts" \))
-          echo "Found ${#FILES[@]} Gradle files"
+          echo "Found ${#FILES[@]} Gradle files to patch"
           for F in "${FILES[@]}"; do
             echo "Patching $F"
             LC_ALL=C tr -cd '\11\12\15\40-\176' < "$F" > "$F.clean" && mv "$F.clean" "$F"
@@ -79,93 +147,26 @@ jobs:
             sed -i 's/sourceCompatibility *=[^0-9A-Za-z]*1\.8/sourceCompatibility JavaVersion.VERSION_17/g' "$F"
             sed -i 's/targetCompatibility *=[^0-9A-Za-z]*1\.8/targetCompatibility JavaVersion.VERSION_17/g' "$F"
             sed -i 's/jvmTarget *= *["'\''"]\?[0-9][0-9]*["'\''"]\?/jvmTarget = "17"/g' "$F"
+
+            # Ensure android { compileOptions {} } exists
             if grep -q "android *{" "$F" && ! grep -q "compileOptions" "$F"; then
               awk 'BEGIN{ins=0} /android *\{/ && ins==0 {print; print "    compileOptions {"; print "        sourceCompatibility JavaVersion.VERSION_17"; print "        targetCompatibility JavaVersion.VERSION_17"; print "    }"; ins=1; next} {print}' "$F" > tmp && mv tmp "$F"
             fi
+            # Ensure kotlinOptions { jvmTarget = "17" }
             if grep -q "android *{" "$F" && ! grep -q "kotlinOptions" "$F"; then
               awk 'BEGIN{ins=0} /android *\{/ && ins==0 {print; print "    kotlinOptions {"; print "        jvmTarget = \"17\""; print "    }"; ins=1; next} {print}' "$F" > tmp && mv tmp "$F"
             fi
           done
 
-      # Ensure repositories can resolve Kotlin plugin + deps
-      - name: Ensure repositories include mavenCentral & plugin portal
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ROOT_BUILD="${PROJECT_DIR}/build.gradle"
-          ROOT_SETTINGS_G="${PROJECT_DIR}/settings.gradle"
-          ROOT_SETTINGS_KTS="${PROJECT_DIR}/settings.gradle.kts"
-
-          patch_repos_block() {
-            local file="$1"
-            [ -f "$file" ] || return 0
-            echo "Patching repositories in $file"
-            LC_ALL=C tr -cd '\11\12\15\40-\176' < "$file" > "$file.clean" && mv "$file.clean" "$file"
-
-            # buildscript { repositories { ... } } (Groovy)
-            if grep -q "buildscript *{" "$file"; then
-              awk '
-                BEGIN{inbs=0; inrep=0}
-                /buildscript *\{/ {inbs=1}
-                inbs && /repositories *\{/ && inrep==0 {print; print "        mavenCentral()"; inrep=1; next}
-                {print}
-                /}/ && inrep==1 {inrep=0}
-                /}/ && inbs==1 {inbs=0}
-              ' "$file" > tmp && mv tmp "$file"
-            fi
-
-            # top-level repositories { ... }
-            if grep -q "repositories *{" "$file"; then
-              awk '
-                BEGIN{inrep=0}
-                /repositories *\{/ && inrep==0 {print; print "        mavenCentral()"; inrep=1; next}
-                {print}
-                /}/ && inrep==1 {inrep=0}
-              ' "$file" > tmp && mv tmp "$file"
-            fi
-          }
-
-          patch_plugin_mgmt() {
-            local file="$1"
-            [ -f "$file" ] || return 0
-            echo "Patching pluginManagement in $file"
-            awk '
-              BEGIN{inpm=0; inrep=0}
-              /pluginManagement *\{/ {inpm=1}
-              inpm && /repositories *\{/ && inrep==0 {
-                print;
-                print "        gradlePluginPortal()";
-                print "        mavenCentral()";
-                inrep=1; next
-              }
-              {print}
-              /}/ && inrep==1 {inrep=0}
-              /}/ && inpm==1 {inpm=0}
-            ' "$file" > tmp && mv tmp "$file"
-          }
-
-          patch_repos_block "$ROOT_BUILD"
-          patch_plugin_mgmt "$ROOT_SETTINGS_G"
-          patch_plugin_mgmt "$ROOT_SETTINGS_KTS"
-
-          echo "After patch, repositories present (if files exist):"
-          grep -n "mavenCentral" "$ROOT_BUILD" "$ROOT_SETTINGS_G" "$ROOT_SETTINGS_KTS" 2>/dev/null || true
-
-      # (Optional) Add common Compose/Kotlin opt-ins to avoid experimental API errors
-      - name: Add Compose/Kotlin opt-in flags across modules
+      # Optional: add common Compose opt-ins (helps many Kotlin/Compose projects)
+      - name: Add Compose/Kotlin opt-in flags
         shell: bash
         run: |
           set -euo pipefail
           mapfile -t FILES < <(find "$PROJECT_DIR" -maxdepth 4 -type f \( -name "build.gradle" -o -name "build.gradle.kts" \))
           for F in "${FILES[@]}"; do
             if grep -q "android *{" "$F"; then
-              # ensure kotlinOptions exists and jvmTarget 17 is set
-              if ! grep -q "kotlinOptions" "$F"; then
-                awk 'BEGIN{ins=0} /android *\{/ && ins==0 {print; print "    kotlinOptions {"; print "        jvmTarget = \"17\""; print "    }"; ins=1; next} {print}' "$F" > tmp && mv tmp "$F"
-              fi
               sed -i 's/jvmTarget *= *["'\''"]\?[0-9][0-9]*["'\''"]\?/jvmTarget = "17"/g' "$F"
-              # add freeCompilerArgs if not present
               if ! grep -q "freeCompilerArgs" "$F"; then
                 awk '
                   BEGIN{inKO=0; done=0}
