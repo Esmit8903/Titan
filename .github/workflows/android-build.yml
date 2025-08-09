@@ -1,139 +1,58 @@
-name: Build Titan (Debug APK)
+- name: Normalize settings.gradle / settings.gradle.kts
+  shell: bash
+  run: |
+    set -e
+    ROOT="$PROJECT_DIR"
 
-on:
-  push:
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Unzip project
-        run: unzip -q TitanApp_Rebuild.zip -d TitanApp
-
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install SDK components
-        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
-
-      - name: Detect Android project dir
-        shell: bash
-        run: |
-          set -e
-          D="$(dirname "$(find TitanApp -maxdepth 3 -name 'settings.gradle*' -print -quit || true)")"
-          if [ -z "$D" ] || [ "$D" = "." ]; then
-            D="$(find TitanApp -maxdepth 4 -type d -path '*/app' -print -quit | sed 's#/app$##')"
-          fi
-          echo "PROJECT_DIR=$D" >> $GITHUB_ENV
-          echo "Detected PROJECT_DIR=$D"
-
-      - name: Use Gradle wrapper if available, else download Gradle 8.7
-        shell: bash
-        run: |
-          if [ -f "$PROJECT_DIR/gradlew" ]; then
-            echo "WRAPPER=1" >> $GITHUB_ENV
-            chmod +x "$PROJECT_DIR/gradlew"
-          else
-            echo "WRAPPER=0" >> $GITHUB_ENV
-            curl -L -o gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
-            unzip -q gradle.zip -d $HOME/gradle
-            echo "$HOME/gradle/gradle-8.7/bin" >> $GITHUB_PATH
-          fi
-
-      - name: Normalize settings.gradle / settings.gradle.kts
-        shell: bash
-        run: |
-          set -e
-          ROOT="$PROJECT_DIR"
-          if [ -f "$ROOT/settings.gradle.kts" ]; then
-            cp "$ROOT/settings.gradle.kts" "$ROOT/settings.gradle.kts.bak" || true
-            cat > "$ROOT/settings.gradle.kts" <<'EOF'
-pluginManagement {
-    repositories {
-        gradlePluginPortal()
-        google()
-        mavenCentral()
+    write_settings_kts() {
+      printf '%s\n' \
+'pluginManagement {' \
+'    repositories {' \
+'        gradlePluginPortal()' \
+'        google()' \
+'        mavenCentral()' \
+'    }' \
+'}' \
+'dependencyResolutionManagement {' \
+'    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)' \
+'    repositories {' \
+'        google()' \
+'        mavenCentral()' \
+'    }' \
+'}' \
+'rootProject.name = "TitanApp"' \
+'include(":app")' \
+> "$ROOT/settings.gradle.kts"
     }
-}
-dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
-rootProject.name = "TitanApp"
-include(":app")
-EOF
-          else
-            [ -f "$ROOT/settings.gradle" ] && cp "$ROOT/settings.gradle" "$ROOT/settings.gradle.bak" || true
-            cat > "$ROOT/settings.gradle" <<'EOF'
-pluginManagement {
-    repositories {
-        gradlePluginPortal()
-        google()
-        mavenCentral()
-    }
-}
-dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
-rootProject.name = "TitanApp"
-include(":app")
-EOF
-          fi
 
-      - name: Force Java/Kotlin 17 across all modules
-        shell: bash
-        run: |
-          set -e
-          mapfile -t FILES < <(find "$PROJECT_DIR" -maxdepth 4 -type f \( -name 'build.gradle' -o -name 'build.gradle.kts' \))
-          for F in "${FILES[@]}"; do
-            LC_ALL=C tr -cd '\11\12\15\40-\176' < "$F" > "$F.clean" && mv "$F.clean" "$F"
-            sed -i 's/JavaVersion\.VERSION_1_8/JavaVersion.VERSION_17/g' "$F"
-            sed -i 's/sourceCompatibility *=[^0-9A-Za-z]*1\.8/sourceCompatibility JavaVersion.VERSION_17/g' "$F"
-            sed -i 's/targetCompatibility *=[^0-9A-Za-z]*1\.8/targetCompatibility JavaVersion.VERSION_17/g' "$F"
-            sed -i 's/jvmTarget *= *["'\'']\?[0-9][0-9]*["'\'']\?/jvmTarget = "17"/g' "$F"
-            if grep -q "android *{" "$F" && ! grep -q "compileOptions" "$F"; then
-              awk 'BEGIN{ins=0} /android *\{/ && ins==0 {print; print "    compileOptions {"; print "        sourceCompatibility JavaVersion.VERSION_17"; print "        targetCompatibility JavaVersion.VERSION_17"; print "    }"; ins=1; next} {print}' "$F" > tmp && mv tmp "$F"
-            fi
-            if grep -q "android *{" "$F" && ! grep -q "kotlinOptions" "$F"; then
-              awk 'BEGIN{ins=0} /android *\{/ && ins==0 {print; print "    kotlinOptions {"; print "        jvmTarget = \"17\""; print "    }"; ins=1; next} {print}' "$F" > tmp && mv tmp "$F"
-            fi
-          done
+    write_settings_groovy() {
+      printf '%s\n' \
+'pluginManagement {' \
+'    repositories {' \
+'        gradlePluginPortal()' \
+'        google()' \
+'        mavenCentral()' \
+'    }' \
+'}' \
+'dependencyResolutionManagement {' \
+'    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)' \
+'    repositories {' \
+'        google()' \
+'        mavenCentral()' \
+'    }' \
+'}' \
+'rootProject.name = "TitanApp"' \
+'include(":app")' \
+> "$ROOT/settings.gradle"
+    }
 
-      - name: Build Debug APK (verbose)
-        shell: bash
-        run: |
-          set -e
-          if [ "$WRAPPER" = "1" ]; then
-            "$PROJECT_DIR/gradlew" -p "$PROJECT_DIR" --no-daemon :app:assembleDebug --stacktrace --info
-          else
-            gradle -v
-            gradle -p "$PROJECT_DIR" --no-daemon :app:assembleDebug --stacktrace --info
-          fi
-          echo "=== Built files ==="
-          find "$PROJECT_DIR" -type f \( -name '*.apk' -o -name '*.aab' \) -print || true
+    if [ -f "$ROOT/settings.gradle.kts" ]; then
+      cp "$ROOT/settings.gradle.kts" "$ROOT/settings.gradle.kts.bak" || true
+      write_settings_kts
+    else
+      [ -f "$ROOT/settings.gradle" ] && cp "$ROOT/settings.gradle" "$ROOT/settings.gradle.bak" || true
+      write_settings_groovy
+    fi
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: titan-debug-artifacts
-          path: |
-            ${{ env.PROJECT_DIR }}/**/build/outputs/**/*.apk
-            ${{ env.PROJECT_DIR }}/**/build/outputs/**/*.aab
-          retention-days: 14
+    echo "Normalized settings file:"
+    cat "$ROOT"/settings.gradle*
