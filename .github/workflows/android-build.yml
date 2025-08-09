@@ -29,18 +29,31 @@ jobs:
       - name: Install SDK components
         run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
+      # ---- Detect project dir (folder with settings.gradle* or fallback to one containing /app) ----
       - name: Detect Android project dir
+        shell: bash
         run: |
           set -e
           D=$(dirname $(find TitanApp -maxdepth 3 -name "settings.gradle*" -print -quit || true))
           if [ -z "$D" ] || [ "$D" = "." ]; then
-            D=$(find TitanApp -maxdepth 4 -path "*/app" -type d -print -quit | sed 's#/app$##')
+            D=$(find TitanApp -maxdepth 4 -type d -path "*/app" -print -quit | sed 's#/app$##')
           fi
           echo "PROJECT_DIR=$D" | tee -a $GITHUB_ENV
-          echo "Detected PROJECT_DIR=$D"
-          test -n "$D"
+          test -n "$D" && echo "Detected PROJECT_DIR=$D"
 
+      # ---- Print project tree so we can see layout on device ----
+      - name: Print project tree (debug)
+        shell: bash
+        run: |
+          echo "PROJECT_DIR=$PROJECT_DIR"
+          ls -la "$PROJECT_DIR" || true
+          ls -la "$PROJECT_DIR/app" || true
+          echo "Gradle build files:"
+          find "$PROJECT_DIR" -maxdepth 4 -type f -name "build.gradle*" -print || true
+
+      # ---- Use wrapper if present; else download Gradle 8.7 ----
       - name: Use Gradle wrapper if available, else download Gradle 8.7
+        shell: bash
         run: |
           if [ -f "$PROJECT_DIR/gradlew" ]; then
             echo "WRAPPER=1" >> $GITHUB_ENV
@@ -51,96 +64,40 @@ jobs:
             unzip -q gradle.zip -d $HOME/gradle
             echo "$HOME/gradle/gradle-8.7/bin" >> $GITHUB_PATH
           fi
-      - name: Force Java/Kotlin 17 in Gradle files (simple)
+
+      # ---- Safely force Java/Kotlin 17 if app/build.gradle(.kts) exists ----
+      - name: Force Java/Kotlin 17 in Gradle files (safe)
         shell: bash
         run: |
           set -euo pipefail
-          APP="$PROJECT_DIR/app"
+          APP="${PROJECT_DIR}/app"
+          GRADLE_FILE=""
+          if [[ -f "${APP}/build.gradle" ]]; then GRADLE_FILE="${APP}/build.gradle"; fi
+          if [[ -z "$GRADLE_FILE" && -f "${APP}/build.gradle.kts" ]]; then GRADLE_FILE="${APP}/build.gradle.kts"; fi
+          if [[ -z "$GRADLE_FILE" ]]; then
+            echo "No app/build.gradle(.kts) found. Skipping patch."
+            exit 0
+          fi
+          echo "Patching $GRADLE_FILE"
+          # normalize to ASCII (mobile editors sometimes add weird chars)
+          LC_ALL=C tr -cd '\11\12\15\40-\176' < "$GRADLE_FILE" > "$GRADLE_FILE.clean" && mv "$GRADLE_FILE.clean" "$GRADLE_FILE"
+          # swap any 1.8 -> 17
+          sed -i 's/JavaVersion\.VERSION_1_8/JavaVersion.VERSION_17/g' "$GRADLE_FILE"
+          sed -i 's/sourceCompatibility *=[^0-9A-Za-z]*1\.8/sourceCompatibility JavaVersion.VERSION_17/g' "$GRADLE_FILE"
+          sed -i 's/targetCompatibility *=[^0-9A-Za-z]*1\.8/targetCompatibility JavaVersion.VERSION_17/g' "$GRADLE_FILE"
+          sed -i 's/jvmTarget *= *["'\''"]\?1\.8["'\''"]\?/jvmTarget = "17"/g' "$GRADLE_FILE"
+          # ensure kotlinOptions exists with jvmTarget 17
+          if ! grep -q "kotlinOptions" "$GRADLE_FILE"; then
+            awk '
+              BEGIN{ins=0}
+              /android *\{/ && ins==0 { print; print "    kotlinOptions {"; print "        jvmTarget = \"17\""; print "    }"; ins=1; next }
+              { print }
+            ' "$GRADLE_FILE" > tmp && mv tmp "$GRADLE_FILE"
+          fi
 
-          for F in "$APP/build.gradle" "$APP/build.gradle.kts"; do
-            if [[ -f "$F" ]]; then
-              # normalize to ASCII (removes weird mobile characters)
-              LC_ALL=C tr -cd '\11\12\15\40-\176' < "$F" > "$F.clean" && mv "$F.clean" "$F"
-
-              # Replace any 1.8 -> 17 settings
-              sed -i 's/JavaVersion\.VERSION_1_8/JavaVersion.VERSION_17/g' "$F"
-              sed -i 's/sourceCompatibility *=[^0-9A-Za-z]*1\.8/sourceCompatibility JavaVersion.VERSION_17/g' "$F"
-              sed -i 's/targetCompatibility *=[^0-9A-Za-z]*1\.8/targetCompatibility JavaVersion.VERSION_17/g' "$F"
-              sed -i 's/jvmTarget *= *["'\''"]\?1\.8["'\''"]\?/jvmTarget = "17"/g' "$F"
-            fi
-          done
-            # 2) Ensure compileOptions exists inside android { }
-            if ! grep -q "compileOptions" "$F"; then
-              awk '
-                BEGIN{ins=0}
-                /android *\{/ && ins==0 { print; print "    compileOptions {";
-                                           print "        sourceCompatibility JavaVersion.VERSION_17";
-                                           print "        targetCompatibility JavaVersion.VERSION_17";
-                                           print "    }"; ins=1; next }
-                { print }
-              ' "$F" > tmp && mv tmp "$F"
-            fi
-
-            # 3) Ensure kotlinOptions exists with jvmTarget 17 inside android { }
-            if ! grep -q "kotlinOptions" "$F"; then
-              awk '
-                BEGIN{ins=0}
-                /android *\{/ && ins==0 { print; print "    kotlinOptions {";
-                                           print "        jvmTarget = \"17\"";
-                                           print "    }"; ins=1; next }
-                { print }
-              ' "$F" > tmp && mv tmp "$F"
-            fi
-          done
-          - name: Add Compose/Kotlin opt-in flags
-           run: |
-          APP="$PROJECT_DIR/app"
-          for F in "$APP/build.gradle" "$APP/build.gradle.kts"; do
-            [ -f "$F" ] || continue
-            # Ensure kotlinOptions block exists in android { } and force jvmTarget 17
-            if ! grep -q "kotlinOptions" "$F"; then
-              awk '
-                BEGIN{ins=0}
-                /android *\{/ && ins==0 { print; print "    kotlinOptions {"; 
-                                           print "        jvmTarget = \"17\"";
-                                           print "        freeCompilerArgs += [";
-                                           print "            \"-opt-in=androidx.compose.material3.ExperimentalMaterial3Api\",";
-                                           print "            \"-opt-in=androidx.compose.material.ExperimentalMaterialApi\",";
-                                           print "            \"-opt-in=androidx.compose.animation.ExperimentalAnimationApi\",";
-                                           print "            \"-opt-in=androidx.compose.foundation.ExperimentalFoundationApi\",";
-                                           print "            \"-opt-in=kotlinx.coroutines.ExperimentalCoroutinesApi\",";
-                                           print "            \"-opt-in=kotlinx.coroutines.FlowPreview\"";
-                                           print "        ]";
-                                           print "    }"; 
-                                           ins=1; next }
-                { print }
-              ' "$F" > tmp && mv tmp "$F"
-            else
-              # Make sure jvmTarget is 17
-              sed -i 's/jvmTarget *= *["'\''"][0-9]*["'\''"]/jvmTarget = "17"/g' "$F"
-              # Inject/merge flags if not present
-              if ! grep -q "ExperimentalMaterial3Api" "$F"; then
-                awk '
-                  BEGIN{inKO=0; done=0}
-                  /kotlinOptions *\{/ {inKO=1}
-                  inKO && /}/ && done==0 {
-                    print "        freeCompilerArgs += [";
-                    print "            \"-opt-in=androidx.compose.material3.ExperimentalMaterial3Api\",";
-                    print "            \"-opt-in=androidx.compose.material.ExperimentalMaterialApi\",";
-                    print "            \"-opt-in=androidx.compose.animation.ExperimentalAnimationApi\",";
-                    print "            \"-opt-in=androidx.compose.foundation.ExperimentalFoundationApi\",";
-                    print "            \"-opt-in=kotlinx.coroutines.ExperimentalCoroutinesApi\",";
-                    print "            \"-opt-in=kotlinx.coroutines.FlowPreview\"";
-                    print "        ]";
-                    done=1
-                  }
-                  { print }
-                  /}/ && inKO { inKO=0 }
-                ' "$F" > tmp && mv tmp "$F"
-              fi
-            fi
-          done
+      # ---- Build ----
       - name: Build Debug APK
+        shell: bash
         run: |
           set -e
           if [ "$WRAPPER" = "1" ]; then
@@ -150,9 +107,11 @@ jobs:
             gradle -p "$PROJECT_DIR" --no-daemon assembleDebug
           fi
 
+      # ---- Upload whatever debug APK we find ----
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: titan-debug-apk
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          path: |
+            ${{ env.PROJECT_DIR }}/**/build/outputs/apk/debug/*.apk
           retention-days: 14
