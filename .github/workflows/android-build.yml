@@ -41,7 +41,7 @@ jobs:
           echo "PROJECT_DIR=$D" | tee -a $GITHUB_ENV
           test -n "$D" && echo "Detected PROJECT_DIR=$D"
 
-      # Show layout (helps us debug paths if anything fails)
+      # Show layout (helps debug paths)
       - name: Print project tree (debug)
         shell: bash
         run: |
@@ -64,7 +64,7 @@ jobs:
             echo "$HOME/gradle/gradle-8.7/bin" >> $GITHUB_PATH
           fi
 
-      # Make all modules use Java/Kotlin 17
+      # Force Java/Kotlin 17 across all modules
       - name: Force Java/Kotlin 17 across all modules
         shell: bash
         run: |
@@ -84,6 +84,107 @@ jobs:
             fi
             if grep -q "android *{" "$F" && ! grep -q "kotlinOptions" "$F"; then
               awk 'BEGIN{ins=0} /android *\{/ && ins==0 {print; print "    kotlinOptions {"; print "        jvmTarget = \"17\""; print "    }"; ins=1; next} {print}' "$F" > tmp && mv tmp "$F"
+            fi
+          done
+
+      # Ensure repositories can resolve Kotlin plugin + deps
+      - name: Ensure repositories include mavenCentral & plugin portal
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ROOT_BUILD="${PROJECT_DIR}/build.gradle"
+          ROOT_SETTINGS_G="${PROJECT_DIR}/settings.gradle"
+          ROOT_SETTINGS_KTS="${PROJECT_DIR}/settings.gradle.kts"
+
+          patch_repos_block() {
+            local file="$1"
+            [ -f "$file" ] || return 0
+            echo "Patching repositories in $file"
+            LC_ALL=C tr -cd '\11\12\15\40-\176' < "$file" > "$file.clean" && mv "$file.clean" "$file"
+
+            # buildscript { repositories { ... } } (Groovy)
+            if grep -q "buildscript *{" "$file"; then
+              awk '
+                BEGIN{inbs=0; inrep=0}
+                /buildscript *\{/ {inbs=1}
+                inbs && /repositories *\{/ && inrep==0 {print; print "        mavenCentral()"; inrep=1; next}
+                {print}
+                /}/ && inrep==1 {inrep=0}
+                /}/ && inbs==1 {inbs=0}
+              ' "$file" > tmp && mv tmp "$file"
+            fi
+
+            # top-level repositories { ... }
+            if grep -q "repositories *{" "$file"; then
+              awk '
+                BEGIN{inrep=0}
+                /repositories *\{/ && inrep==0 {print; print "        mavenCentral()"; inrep=1; next}
+                {print}
+                /}/ && inrep==1 {inrep=0}
+              ' "$file" > tmp && mv tmp "$file"
+            fi
+          }
+
+          patch_plugin_mgmt() {
+            local file="$1"
+            [ -f "$file" ] || return 0
+            echo "Patching pluginManagement in $file"
+            awk '
+              BEGIN{inpm=0; inrep=0}
+              /pluginManagement *\{/ {inpm=1}
+              inpm && /repositories *\{/ && inrep==0 {
+                print;
+                print "        gradlePluginPortal()";
+                print "        mavenCentral()";
+                inrep=1; next
+              }
+              {print}
+              /}/ && inrep==1 {inrep=0}
+              /}/ && inpm==1 {inpm=0}
+            ' "$file" > tmp && mv tmp "$file"
+          }
+
+          patch_repos_block "$ROOT_BUILD"
+          patch_plugin_mgmt "$ROOT_SETTINGS_G"
+          patch_plugin_mgmt "$ROOT_SETTINGS_KTS"
+
+          echo "After patch, repositories present (if files exist):"
+          grep -n "mavenCentral" "$ROOT_BUILD" "$ROOT_SETTINGS_G" "$ROOT_SETTINGS_KTS" 2>/dev/null || true
+
+      # (Optional) Add common Compose/Kotlin opt-ins to avoid experimental API errors
+      - name: Add Compose/Kotlin opt-in flags across modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t FILES < <(find "$PROJECT_DIR" -maxdepth 4 -type f \( -name "build.gradle" -o -name "build.gradle.kts" \))
+          for F in "${FILES[@]}"; do
+            if grep -q "android *{" "$F"; then
+              # ensure kotlinOptions exists and jvmTarget 17 is set
+              if ! grep -q "kotlinOptions" "$F"; then
+                awk 'BEGIN{ins=0} /android *\{/ && ins==0 {print; print "    kotlinOptions {"; print "        jvmTarget = \"17\""; print "    }"; ins=1; next} {print}' "$F" > tmp && mv tmp "$F"
+              fi
+              sed -i 's/jvmTarget *= *["'\''"]\?[0-9][0-9]*["'\''"]\?/jvmTarget = "17"/g' "$F"
+              # add freeCompilerArgs if not present
+              if ! grep -q "freeCompilerArgs" "$F"; then
+                awk '
+                  BEGIN{inKO=0; done=0}
+                  /kotlinOptions *\{/ {inKO=1}
+                  inKO && /}/ && done==0 {
+                    print "        freeCompilerArgs += [";
+                    print "            \"-opt-in=androidx.compose.material3.ExperimentalMaterial3Api\",";
+                    print "            \"-opt-in=androidx.compose.material.ExperimentalMaterialApi\",";
+                    print "            \"-opt-in=androidx.compose.animation.ExperimentalAnimationApi\",";
+                    print "            \"-opt-in=androidx.compose.foundation.ExperimentalFoundationApi\",";
+                    print "            \"-opt-in=kotlinx.coroutines.ExperimentalCoroutinesApi\",";
+                    print "            \"-opt-in=kotlinx.coroutines.FlowPreview\"";
+                    print "        ]";
+                    done=1
+                  }
+                  { print }
+                  /}/ && inKO { inKO=0 }
+                ' "$F" > tmp && mv tmp "$F"
+              fi
             fi
           done
 
