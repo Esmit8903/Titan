@@ -35,18 +35,19 @@ jobs:
           unzip -q gradle.zip -d $HOME/gradle
           echo "$HOME/gradle/gradle-8.7/bin" >> $GITHUB_PATH
 
-      - name: Patch Gradle for Java 17 + Compose opt-ins
+    - name: Patch Gradle for Java 17 + Compose opt-ins (inside android.kotlinOptions)
         run: |
           FILE="TitanApp/app/build.gradle"
           if [ -f "$FILE" ]; then
-            # sanitize file to plain ASCII
+            # sanitize to ASCII
             LC_ALL=C tr -cd '\11\12\15\40-\176' < "$FILE" > "$FILE.clean" && mv "$FILE.clean" "$FILE"
 
-            # ensure compileOptions in android{}
+            # Ensure compileOptions { … } INSIDE android { }
             if ! grep -q "compileOptions" "$FILE"; then
               awk '
                 BEGIN{added=0}
-                /composeOptions/ && added==0 {
+                /android *\{/ { inAndroid=1 }
+                /composeOptions/ && inAndroid && added==0 {
                   print;
                   print "    compileOptions {";
                   print "        sourceCompatibility JavaVersion.VERSION_17";
@@ -54,17 +55,18 @@ jobs:
                   print "    }";
                   added=1; next
                 }
-                {print}
+                { print }
               ' "$FILE" > tmp && mv tmp "$FILE"
             else
               sed -i "s/JavaVersion[^0-9]*VERSION_17/JavaVersion.VERSION_17/g" "$FILE"
             fi
 
-            # ensure kotlinOptions jvmTarget + opt-in
-            if ! grep -q "kotlinOptions" "$FILE"; then
+            # Ensure kotlinOptions { … } INSIDE android { }
+            if ! grep -q "kotlinOptions *{" "$FILE"; then
               awk '
                 BEGIN{added=0}
-                /composeOptions/ && added==0 {
+                /android *\{/ { inAndroid=1 }
+                /composeOptions/ && inAndroid && added==0 {
                   print;
                   print "    kotlinOptions {";
                   print "        jvmTarget = \"17\"";
@@ -72,21 +74,28 @@ jobs:
                   print "    }";
                   added=1; next
                 }
-                {print}
+                { print }
               ' "$FILE" > tmp && mv tmp "$FILE"
             else
-              # add opt-in if kotlinOptions exists
-              sed -i "/kotlinOptions *{/a\ \ \ \ \ \ \ \ freeCompilerArgs += [\"-opt-in=androidx.compose.material3.ExperimentalMaterial3Api\"]" "$FILE" || true
+              # normalize jvmTarget and add opt-in inside existing kotlinOptions
               sed -i "s/jvmTarget *= *['\"][0-9]*['\"]/jvmTarget = \"17\"/g" "$FILE"
+              awk '
+                BEGIN{inKO=0; injected=0}
+                /kotlinOptions *\{/ {inKO=1}
+                inKO && /}/ && injected==0 { print "        freeCompilerArgs += [\"-opt-in=androidx.compose.material3.ExperimentalMaterial3Api\"]"; injected=1 }
+                { print }
+                /kotlinOptions *\{/ && injected==0 && /}/ { injected=1 }
+                /}/ && inKO { inKO=0 }
+              ' "$FILE" > tmp && mv tmp "$FILE"
             fi
 
-            # add Kotlin toolchain at top level if missing
+            # Add Kotlin toolchain at top level if missing
             if ! grep -q "jvmToolchain(17)" "$FILE"; then
               printf '\n// Injected by CI\nkotlin {\n  jvmToolchain(17)\n}\n' >> "$FILE"
             fi
           fi
 
-          # clean manifest package attr (optional)
+          # Clean manifest package attr (optional)
           MAN="TitanApp/app/src/main/AndroidManifest.xml"
           if [ -f "$MAN" ]; then
             sed -i 's/^\s*<manifest\s\+xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android"\s\+package="[^"]*">/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">/' "$MAN" || true
