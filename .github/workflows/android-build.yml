@@ -29,7 +29,7 @@ jobs:
       - name: Install SDK components
         run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      # ---- Detect project dir (folder with settings.gradle* or fallback to one containing /app) ----
+      # Detect Android project directory
       - name: Detect Android project dir
         shell: bash
         run: |
@@ -41,7 +41,7 @@ jobs:
           echo "PROJECT_DIR=$D" | tee -a $GITHUB_ENV
           test -n "$D" && echo "Detected PROJECT_DIR=$D"
 
-      # ---- Print project tree so we can see layout on device ----
+      # Show layout (helps us debug paths if anything fails)
       - name: Print project tree (debug)
         shell: bash
         run: |
@@ -51,7 +51,6 @@ jobs:
           echo "Gradle build files:"
           find "$PROJECT_DIR" -maxdepth 4 -type f -name "build.gradle*" -print || true
 
-      # ---- Use wrapper if present; else download Gradle 8.7 ----
       - name: Use Gradle wrapper if available, else download Gradle 8.7
         shell: bash
         run: |
@@ -65,7 +64,7 @@ jobs:
             echo "$HOME/gradle/gradle-8.7/bin" >> $GITHUB_PATH
           fi
 
-      # ---- Safely force Java/Kotlin 17 if app/build.gradle(.kts) exists ----
+      # Make all modules use Java/Kotlin 17
       - name: Force Java/Kotlin 17 across all modules
         shell: bash
         run: |
@@ -75,28 +74,37 @@ jobs:
           echo "Found ${#FILES[@]} Gradle files"
           for F in "${FILES[@]}"; do
             echo "Patching $F"
-            # Normalize to ASCII
             LC_ALL=C tr -cd '\11\12\15\40-\176' < "$F" > "$F.clean" && mv "$F.clean" "$F"
-            # Replace 1.8 -> 17 wherever it appears
             sed -i 's/JavaVersion\.VERSION_1_8/JavaVersion.VERSION_17/g' "$F"
             sed -i 's/sourceCompatibility *=[^0-9A-Za-z]*1\.8/sourceCompatibility JavaVersion.VERSION_17/g' "$F"
             sed -i 's/targetCompatibility *=[^0-9A-Za-z]*1\.8/targetCompatibility JavaVersion.VERSION_17/g' "$F"
             sed -i 's/jvmTarget *= *["'\''"]\?[0-9][0-9]*["'\''"]\?/jvmTarget = "17"/g' "$F"
-            # If android { } exists and compileOptions is missing, insert it
             if grep -q "android *{" "$F" && ! grep -q "compileOptions" "$F"; then
               awk 'BEGIN{ins=0} /android *\{/ && ins==0 {print; print "    compileOptions {"; print "        sourceCompatibility JavaVersion.VERSION_17"; print "        targetCompatibility JavaVersion.VERSION_17"; print "    }"; ins=1; next} {print}' "$F" > tmp && mv tmp "$F"
             fi
-            # Ensure kotlinOptions with jvmTarget 17 exists inside android { }
             if grep -q "android *{" "$F" && ! grep -q "kotlinOptions" "$F"; then
               awk 'BEGIN{ins=0} /android *\{/ && ins==0 {print; print "    kotlinOptions {"; print "        jvmTarget = \"17\""; print "    }"; ins=1; next} {print}' "$F" > tmp && mv tmp "$F"
             fi
           done
 
-      # ---- Upload whatever debug APK we find ----
-      - name: Upload APK artifact
+      - name: Build Debug APK (verbose)
+        shell: bash
+        run: |
+          set -e
+          if [ "$WRAPPER" = "1" ]; then
+            "$PROJECT_DIR/gradlew" -p "$PROJECT_DIR" --no-daemon :app:assembleDebug --stacktrace --info
+          else
+            gradle -v
+            gradle -p "$PROJECT_DIR" --no-daemon :app:assembleDebug --stacktrace --info
+          fi
+          echo "=== Built files ==="
+          find "$PROJECT_DIR" -type f \( -name "*.apk" -o -name "*.aab" \) -print || true
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: titan-debug-apk
+          name: titan-debug-artifacts
           path: |
-            ${{ env.PROJECT_DIR }}/**/build/outputs/apk/debug/*.apk
+            ${{ env.PROJECT_DIR }}/**/build/outputs/**/*.apk
+            ${{ env.PROJECT_DIR }}/**/build/outputs/**/*.aab
           retention-days: 14
