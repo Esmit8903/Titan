@@ -23,6 +23,12 @@ jobs:
           set -euo pipefail
           if [ -f "Titan/TitanApp_Rebuild.zip" ]; then
             echo "Found Titan/TitanApp_Rebuild.zip, unzipping into Titan/ ..."
+            # Make sure Titan/ exists and is a directory
+            if [ -e "Titan" ] && [ ! -d "Titan" ]; then
+              echo "::warning:: 'Titan' exists but is not a directory. Moving to Titan.bak"
+              mv -f "Titan" "Titan.bak"
+            fi
+            mkdir -p Titan
             unzip -q -o "Titan/TitanApp_Rebuild.zip" -d "Titan" || true
           else
             echo "No Titan/TitanApp_Rebuild.zip present. Continuing."
@@ -34,6 +40,13 @@ jobs:
           set -euo pipefail
           ROOT="${PROJECT_ROOT}"
           MOD="${APP_MODULE}"
+
+          # If ROOT exists but is a file, move it out of the way
+          if [ -e "$ROOT" ] && [ ! -d "$ROOT" ]; then
+            echo "::warning:: '$ROOT' exists but is not a directory. Moving to ${ROOT}.bak"
+            mv -f "$ROOT" "${ROOT}.bak"
+          fi
+          mkdir -p "$ROOT"
 
           if [ -f "$ROOT/settings.gradle.kts" ] || [ -f "$ROOT/settings.gradle" ]; then
             echo "Gradle project detected under $ROOT"
@@ -194,8 +207,6 @@ jobs:
         shell: bash
         run: |
           set -e
-          echo "PROJECT_ROOT=${PROJECT_ROOT}"
-          echo "APP_MODULE=${APP_MODULE}"
           CMD="${{ steps.gradle.outputs.GRADLE_CMD }}"
           "$CMD" -p "${PROJECT_ROOT}" --no-daemon \
             :${APP_MODULE}:assembleDebug --stacktrace --warning-mode=all -i
