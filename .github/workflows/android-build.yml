@@ -37,14 +37,9 @@ jobs:
         shell: bash
         run: |
           set -e
-          # Try TitanApp/app first (typical), else TitanApp
-          if [ -f TitanApp/app/build.gradle ] || [ -f TitanApp/app/build.gradle.kts ]; then
-            echo "PROJECT_DIR=TitanApp" >> "$GITHUB_OUTPUT"
-            echo "Detected PROJECT_DIR=TitanApp"
-          else
-            echo "PROJECT_DIR=TitanApp" >> "$GITHUB_OUTPUT"
-            echo "Detected PROJECT_DIR=TitanApp"
-          fi
+          # Your zip extracts to TitanApp/TitanAppApp style—keep it simple:
+          echo "PROJECT_DIR=TitanApp" >> "$GITHUB_OUTPUT"
+          echo "Detected PROJECT_DIR=TitanApp"
 
       - name: Make gradlew executable (if present)
         working-directory: ${{ steps.detect.outputs.PROJECT_DIR }}
@@ -68,15 +63,13 @@ jobs:
             echo "GRADLE_CMD=gradle" >> "$GITHUB_OUTPUT"
           fi
 
-      # ---------- Write settings.gradle.kts without here-docs ----------
-      - name: Write settings.gradle.kts with repositories + include(":app")
+      # settings.gradle.kts (no heredocs)
+      - name: Write settings.gradle.kts
         shell: bash
         run: |
           set -e
           ROOT="${{ steps.detect.outputs.PROJECT_DIR }}"
           FILE="$ROOT/settings.gradle.kts"
-
-          # Overwrite with a known-good file
           printf '%s\n' \
             'pluginManagement {' \
             '  repositories {' \
@@ -101,12 +94,10 @@ jobs:
             'rootProject.name = "TitanApp"' \
             'include(":app")' \
             > "$FILE"
-
           echo "Wrote $FILE"
-          sed -n '1,200p' "$FILE"
 
-      # ---------- Ensure/patch app/build.gradle.kts without here-docs ----------
-      - name: Ensure app/build.gradle.kts exists and is compatible
+      # app/build.gradle.kts (create if missing + patch for Java17/Compose)
+      - name: Ensure app/build.gradle.kts exists and is Java17/Compose ready
         shell: bash
         run: |
           set -e
@@ -144,51 +135,54 @@ jobs:
               '    jvmTarget = "17"' \
               '    freeCompilerArgs += listOf(' \
               '      "-Xskip-prerelease-check",' \
-              '      "-opt-in=kotlin.RequiresOptIn"' \
+              '      "-opt-in=kotlin.RequiresOptIn",' \
+              '      "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",' \
+              '      "-opt-in=androidx.compose.foundation.ExperimentalFoundationApi",' \
+              '      "-opt-in=androidx.compose.ui.ExperimentalComposeUiApi"' \
               '    )' \
               '  }' \
               '}' \
               '' \
               'dependencies {' \
+              '  // Compose BOM + core UI' \
+              '  val composeBom = platform("androidx.compose:compose-bom:2024.06.00")' \
+              '  implementation(composeBom)' \
+              '  androidTestImplementation(composeBom)' \
+              '  implementation("androidx.compose.ui:ui")' \
+              '  implementation("androidx.compose.ui:ui-tooling-preview")' \
+              '  debugImplementation("androidx.compose.ui:ui-tooling")' \
+              '  implementation("androidx.compose.material3:material3")' \
+              '  implementation("androidx.activity:activity-compose:1.9.0")' \
+              '' \
+              '  // Kotlin / Android basics' \
               '  implementation(platform("org.jetbrains.kotlin:kotlin-bom:1.9.24"))' \
               '  implementation("androidx.core:core-ktx:1.12.0")' \
               '  implementation("androidx.appcompat:appcompat:1.6.1")' \
               '}' \
               > "$APP_KTS"
             echo "Created $APP_KTS"
-          fi
-
-          # Ensure Java 17 compileOptions exist (if user file lacked it)
-          if ! grep -q 'compileOptions' "$APP_KTS"; then
-            awk '1; /android *\{/ && !ins {print "  compileOptions { sourceCompatibility = JavaVersion.VERSION_17"; print "    targetCompatibility = JavaVersion.VERSION_17"; print "  }"; ins=1}' "$APP_KTS" > tmp && mv tmp "$APP_KTS"
-            echo "Patched compileOptions into $APP_KTS"
+          else
+            # If it exists, make sure Java 17 compileOptions are present
+            if ! grep -q 'compileOptions' "$APP_KTS"; then
+              awk '1; /android *\{/ && !ins {print "  compileOptions { sourceCompatibility = JavaVersion.VERSION_17"; print "    targetCompatibility = JavaVersion.VERSION_17"; print "  }"; ins=1}' "$APP_KTS" > tmp && mv tmp "$APP_KTS"
+              echo "Patched compileOptions into $APP_KTS"
+            fi
           fi
 
           echo "Final $APP_KTS:"
-          sed -n '1,220p' "$APP_KTS"
+          sed -n '1,260p' "$APP_KTS"
 
-      - name: Build Debug APK (verbose)
+      - name: Build Debug APK (capture full log)
         shell: bash
         run: |
           set -e
           CMD="${{ steps.gradle.outputs.GRADLE_CMD }}"
-          "$CMD" -p "${{ steps.detect.outputs.PROJECT_DIR }}" --no-daemon :app:assembleDebug --stacktrace --info
+          # Save full log for analysis
+          ${CMD} -p "${{ steps.detect.outputs.PROJECT_DIR }}" --no-daemon :app:assembleDebug --stacktrace --info | tee /tmp/gradle.log
 
-      - name: "Debug: print project structure on failure"
+      - name: Show Kotlin/Java errors (if failed)
         if: failure()
         shell: bash
         run: |
-          echo "== Gradle files found =="
-          find "${{ steps.detect.outputs.PROJECT_DIR }}" -maxdepth 3 \( -name "build.gradle" -o -name "build.gradle.kts" \) -print
-          echo "== App directory listing =="
-          ls -la "${{ steps.detect.outputs.PROJECT_DIR }}/app" || true
-
-      - name: Upload APK artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: titan-debug-apk
-          path: |
-            ${{ steps.detect.outputs.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
-            ${{ steps.detect.outputs.PROJECT_DIR }}/**/build/outputs/apk/debug/*.apk
-          if-no-files-found: warn
+          echo "===== Kotlin error lines ====="
+          grep -n "^[[:space:]]*e: "
