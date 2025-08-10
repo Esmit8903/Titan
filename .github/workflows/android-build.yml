@@ -1,4 +1,4 @@
-name: Build Android (Titan with ZIP restore + strong checks)
+name: Build Android (Titan subdir + auto-flatten + guards)
 
 on:
   push:
@@ -13,7 +13,7 @@ jobs:
       APP_MODULE: app
 
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Java 17
@@ -26,166 +26,96 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install SDK components
-        run: |
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      # ---------- ZIP VALIDATION & RESTORE ----------
-      - name: "If present, validate & unzip 'TitanApp_Rebuild.zip' into PROJECT_ROOT"
+      # --- Optional: unzip rebuild zip if present ---
+      - name: Unzip TitanApp_Rebuild.zip (if present)
         shell: bash
         run: |
           set -euo pipefail
-          ZIP="TitanApp_Rebuild.zip"
-          DEST="${PROJECT_ROOT}"
-
+          ZIP="Titan/TitanApp_Rebuild.zip"
           if [[ -f "$ZIP" ]]; then
             echo "Zip found: $ZIP"
-            echo "Running 'unzip -tq' to validate integrity..."
-            if ! unzip -tq "$ZIP" >/dev/null 2>&1; then
-              echo "::error::Zip file '$ZIP' is corrupt or unreadable. Re-upload a valid archive and re-run."
-              exit 2
+            mkdir -p "$PROJECT_ROOT"
+            # unzip *into* PROJECT_ROOT (quietly, overwrite)
+            unzip -oq "$ZIP" -d "$PROJECT_ROOT"
+
+            echo "After unzip, tree under $PROJECT_ROOT (depth 2):"
+            find "$PROJECT_ROOT" -maxdepth 2 -print
+
+            # --- Auto-FLATTEN: handle Titan/Titan/... nesting ---
+            # cases we fix:
+            # 1) $PROJECT_ROOT/Titan/app   -> move contents up into $PROJECT_ROOT
+            # 2) $PROJECT_ROOT/$PROJECT_ROOT/app (rare) -> move up once
+            if [[ -d "$PROJECT_ROOT/Titan/app" ]]; then
+              echo "Flatten: moving $PROJECT_ROOT/Titan/* up into $PROJECT_ROOT"
+              shopt -s dotglob nullglob
+              mv "$PROJECT_ROOT"/Titan/* "$PROJECT_ROOT"/
+              rmdir "$PROJECT_ROOT/Titan" || true
+            elif [[ -d "$PROJECT_ROOT/$PROJECT_ROOT/app" ]]; then
+              echo "Flatten: moving $PROJECT_ROOT/$PROJECT_ROOT/* up into $PROJECT_ROOT"
+              shopt -s dotglob nullglob
+              mv "$PROJECT_ROOT"/"$PROJECT_ROOT"/* "$PROJECT_ROOT"/
+              rmdir "$PROJECT_ROOT/$PROJECT_ROOT" || true
+            else
+              echo "No flattening required."
             fi
-
-            echo "Clearing any stale ${DEST}/app (files blocking dir creation)..."
-            # Remove only if it exists; don't fail if not there
-            rm -rf "${DEST}/app" || true
-
-            echo "Unzipping into '${DEST}/'…"
-            mkdir -p "$DEST"
-            # -o overwrite, -q quiet
-            unzip -oq "$ZIP" -d "$DEST"
-
-            echo "Zip extraction finished."
           else
-            echo "No '$ZIP' in repo root; continuing with files already in '${DEST}/'."
+            echo "No rebuild zip found (skipping)."
           fi
 
-      # ---------- HARD FAIL EARLY IF PROJECT SHAPE IS WRONG ----------
+      # --- GUARD: verify layout and give actionable hints ---
       - name: "Verify project layout (fail-fast with hints)"
         shell: bash
         run: |
           set -euo pipefail
-          ROOT="${PROJECT_ROOT}"
-          APP="${APP_MODULE}"
-
           echo "== repo root =="
           ls -la
-          echo
           echo "== quick tree (depth 2) =="
-          find "$ROOT" -maxdepth 2 -printf "%y %p\n" | sort
+          find "$PROJECT_ROOT" -maxdepth 2 -print || true
 
-          # settings file (kts or groovy)
-          SETTINGS=""
-          if [[ -f "${ROOT}/settings.gradle.kts" ]]; then
-            SETTINGS="${ROOT}/settings.gradle.kts"
-          elif [[ -f "${ROOT}/settings.gradle" ]]; then
-            SETTINGS="${ROOT}/settings.gradle"
+          SETTINGS_FILE=""
+          if [[ -f "$PROJECT_ROOT/settings.gradle.kts" ]]; then
+            SETTINGS_FILE="$PROJECT_ROOT/settings.gradle.kts"
+          elif [[ -f "$PROJECT_ROOT/settings.gradle" ]]; then
+            SETTINGS_FILE="$PROJECT_ROOT/settings.gradle"
           fi
 
-          if [[ -z "$SETTINGS" ]]; then
-            echo "::error::Missing settings file under '${ROOT}'. Create one with e.g.:
-            pluginManagement {
-              repositories { gradlePluginPortal(); google(); mavenCentral() }
-            }
-            dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories { google(); mavenCentral() }
-            }
-            rootProject.name = \"Titan\"
-            include(\":${APP}\")"
-            exit 3
-          fi
-          echo "Using settings file: $SETTINGS"
-
-          # app module directory MUST be a directory
-          if [[ ! -d "${ROOT}/${APP}" ]]; then
-            echo "::error::Expected directory '${ROOT}/${APP}' (module '${APP}') not found."
-            echo "If you restored from zip, ensure it contained '${APP}/' as a directory."
-            exit 4
+          APP_BUILD_FILE=""
+          if compgen -G "$PROJECT_ROOT/$APP_MODULE/build.gradle.kts" > /dev/null; then
+            APP_BUILD_FILE="$PROJECT_ROOT/$APP_MODULE/build.gradle.kts"
+          elif compgen -G "$PROJECT_ROOT/$APP_MODULE/build.gradle" > /dev/null; then
+            APP_BUILD_FILE="$PROJECT_ROOT/$APP_MODULE/build.gradle"
           fi
 
-          # build.gradle(.kts) must exist inside app
-          if [[ ! -f "${ROOT}/${APP}/build.gradle" && ! -f "${ROOT}/${APP}/build.gradle.kts" ]]; then
-            echo "::error::Missing module build file in '${ROOT}/${APP}/' (build.gradle or build.gradle.kts)."
-            exit 5
+          ERR=0
+          if [[ -z "$SETTINGS_FILE" ]]; then
+            echo "::error::Missing settings.gradle(.kts) in '$PROJECT_ROOT'."
+            echo "Hint: Create $PROJECT_ROOT/settings.gradle.kts with:"
+            echo "  rootProject.name = \"Titan\""
+            echo "  include(\":$APP_MODULE\")"
+            ERR=1
           fi
 
-          echo "Project layout looks OK."
+          if [[ ! -d "$PROJECT_ROOT/$APP_MODULE" ]]; then
+            echo "::error::Expected module directory '$PROJECT_ROOT/$APP_MODULE' not found."
+            echo "Hint: Ensure the zip or repo has '$PROJECT_ROOT/$APP_MODULE' (e.g., Titan/app)."
+            ERR=1
+          elif [[ -z "$APP_BUILD_FILE" ]]; then
+            echo "::error::Missing app build file in '$PROJECT_ROOT/$APP_MODULE' (build.gradle or .kts)."
+            ERR=1
+          fi
 
-      # ---------- MAKE GRADLEW EXECUTABLE IF PRESENT ----------
+          if [[ $ERR -ne 0 ]]; then
+            echo "Guard check failed. See errors above."
+            exit 1
+          fi
+
+          echo "Using settings file: $SETTINGS_FILE"
+          echo "Found module build file: $APP_BUILD_FILE"
+
       - name: Make gradlew executable (if present)
         working-directory: ${{ env.PROJECT_ROOT }}
         shell: bash
         run: |
-          set -euo pipefail
-          if [[ -f ./gradlew ]]; then chmod +x ./gradlew; fi
-
-      # ---------- PICK GRADLE (WRAPPER OR 8.7) ----------
-      - name: Pick Gradle (wrapper or 8.7)
-        id: gradle
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "${PROJECT_ROOT}"
-          if [[ -f ./gradlew ]]; then
-            echo "Using wrapper."
-            echo "GRADLE_CMD=./gradlew" >> "$GITHUB_OUTPUT"
-          else
-            echo "No wrapper; downloading Gradle 8.7…"
-            cd ~
-            curl -sSL -o gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
-            unzip -q gradle.zip
-            echo "$HOME/gradle-8.7/bin" >> "$GITHUB_PATH"
-            echo "GRADLE_CMD=gradle" >> "$GITHUB_OUTPUT"
-          fi
-
-      # ---------- BUILD ----------
-      - name: "Build Debug APK (capture full log)"
-        shell: bash
-        run: |
-          set -euo pipefail
-          CMD="${{ steps.gradle.outputs.GRADLE_CMD }}"
-          "$CMD" -p "${PROJECT_ROOT}" --no-daemon ":${APP_MODULE}:assembleDebug" --stacktrace --info
-
-      # ---------- BEST-EFFORT ERROR HINTS ----------
-      - name: "Summarize Gradle errors (best-effort)"
-        if: failure()
-        shell: bash
-        run: |
-          set -e
-          echo "==== Looking for Kotlin/Java error lines ===="
-          # Grep last 3000 lines of the full job log if present in local file (best effort)
-          # Fallback: search project for common markers
-          grep -RIn --line-number --no-messages -e "e: " -e "FAILED" -e "error:" "${PROJECT_ROOT}" || true
-
-      # ---------- SHOW ANY APKS ANYWHERE (DIAGNOSTIC) ----------
-      - name: "Show any APKs that exist (any path)"
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Searching for APKs..."
-          find . -type f -name "*.apk" -print || true
-
-      # ---------- DEBUG TREE ON FAILURE ----------
-      - name: "Debug: print project structure on failure"
-        if: failure()
-        shell: bash
-        run: |
-          set -e
-          echo "== repo root =="
-          ls -la
-          echo "== quick tree (depth 3) =="
-          find "${PROJECT_ROOT}" -maxdepth 3 -printf "%y %p\n" | sort
-          echo "== Gradle files =="
-          find "${PROJECT_ROOT}" -maxdepth 3 \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" -o -name "settings.gradle.kts" \) -print
-
-      # ---------- UPLOAD ANY APKS FROM THE APP MODULE ----------
-      - name: Upload APK artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: titan-debug-apk
-          path: |
-            ${{ env.PROJECT_ROOT }}/${{ env.APP_MODULE }}/build/outputs/apk/**/*.apk
-            **/build/outputs/apk/**/*.apk
-          if-no-files-found: warn
+          if [[ -f ./gradlew
