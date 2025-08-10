@@ -1,4 +1,4 @@
-name: Build Android (auto-create tiny app if missing)
+name: Build Android (auto-create if missing)
 
 on:
   push:
@@ -9,8 +9,8 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      PROJECT_ROOT: Titan          # your Android project lives in Titan/
-      APP_MODULE: app              # the application module name
+      PROJECT_ROOT: Titan
+      APP_MODULE: app
 
     steps:
       - name: Checkout repo
@@ -29,170 +29,190 @@ jobs:
         run: |
           sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      # --- Optional: if a rebuild ZIP is present, unzip it into Titan/ ---
       - name: Unzip TitanApp_Rebuild.zip (if present)
         shell: bash
         run: |
           set -euo pipefail
-          if [ -f "${{ env.PROJECT_ROOT }}/TitanApp_Rebuild.zip" ]; then
-            echo "Zip found under Titan/. Unpacking into Titan/..."
-            unzip -o "${{ env.PROJECT_ROOT }}/TitanApp_Rebuild.zip" -d "${{ env.PROJECT_ROOT }}"
+          if [ -f "TitanApp_Rebuild.zip" ]; then
+            echo "Zip found. Unpacking into ${PROJECT_ROOT} ..."
+            mkdir -p "${PROJECT_ROOT}"
+            unzip -o -q TitanApp_Rebuild.zip -d "${PROJECT_ROOT}"
           else
-            echo "No rebuild zip found — skipping."
+            echo "No rebuild zip found – skipping."
           fi
 
-      # --- Guard + auto-create minimal app when Titan/app is missing ---
       - name: Ensure Gradle project exists (or auto-generate tiny app)
+        id: ensure
         shell: bash
         run: |
           set -euo pipefail
+          ROOT="${PROJECT_ROOT}"
+          APP="${APP_MODULE}"
 
-          ROOT="${{ env.PROJECT_ROOT }}"
-          APP="${ROOT}/${{ env.APP_MODULE }}"
+          echo "Using project root: ${ROOT}"
+          echo "Expected app module : ${APP}"
 
-          echo "Using project root: $ROOT"
-          echo "Expected app module : $APP"
+          mkdir -p "${ROOT}"
 
-          # Ensure the root directory exists
-          if [ ! -d "$ROOT" ]; then
-            echo "::error::Expected directory '$ROOT' does not exist. Create 'Titan/' at repo root."
-            exit 1
+          # If a settings.gradle(.kts) already exists, assume the project exists.
+          if ls "${ROOT}"/settings.gradle* >/dev/null 2>&1; then
+            echo "Gradle settings already present. Skipping auto-create."
+            exit 0
           fi
 
-          # Create settings.gradle.kts if missing (keeps repos + include(":app"))
-          if [ ! -f "$ROOT/settings.gradle.kts" ]; then
-            echo "Creating $ROOT/settings.gradle.kts ..."
-            cat <<'EOF' > "$ROOT/settings.gradle.kts"
-            pluginManagement {
-              repositories {
-                gradlePluginPortal()
-                google()
-                mavenCentral()
+          echo "No Gradle project detected. Creating a tiny Android app under ${ROOT}/${APP} ..."
+
+          # --- settings.gradle.kts ---
+          cat <<'EOF' > "${ROOT}/settings.gradle.kts"
+          pluginManagement {
+            repositories {
+              google()
+              mavenCentral()
+              gradlePluginPortal()
+            }
+          }
+          dependencyResolutionManagement {
+            repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+            repositories {
+              google()
+              mavenCentral()
+            }
+          }
+          rootProject.name = "Titan"
+          include(":app")
+          EOF
+
+          # --- root build.gradle.kts (minimal) ---
+          cat <<'EOF' > "${ROOT}/build.gradle.kts"
+          plugins {
+            // nothing at root
+          }
+          EOF
+
+          # --- app module ---
+          mkdir -p "${ROOT}/${APP}/src/main/java/com/example/titan" "${ROOT}/${APP}/src/main/res/values"
+
+          # module build.gradle.kts
+          cat <<'EOF' > "${ROOT}/${APP}/build.gradle.kts"
+          plugins {
+            id("com.android.application") version "8.5.2"
+            id("org.jetbrains.kotlin.android") version "1.9.24"
+          }
+
+          android {
+            namespace = "com.example.titan"
+            compileSdk = 34
+
+            defaultConfig {
+              applicationId = "com.example.titan"
+              minSdk = 24
+              targetSdk = 34
+              versionCode = 1
+              versionName = "1.0"
+            }
+
+            buildTypes {
+              release {
+                isMinifyEnabled = false
+                proguardFiles(
+                  getDefaultProguardFile("proguard-android-optimize.txt"),
+                  "proguard-rules.pro"
+                )
               }
             }
-            dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories {
-                google()
-                mavenCentral()
-              }
+
+            compileOptions {
+              sourceCompatibility = JavaVersion.VERSION_17
+              targetCompatibility = JavaVersion.VERSION_17
             }
-            rootProject.name = "Titan"
-            include(":app")
-            EOF
-          fi
-
-          # If Titan/app missing, generate a tiny, buildable app
-          if [ ! -d "$APP" ]; then
-            echo "App module not found. Auto-creating a tiny Android app at $APP ..."
-            mkdir -p "$APP/src/main/java/com/example/titan"
-            mkdir -p "$APP/src/main/res/values"
-
-            # Minimal module build (AGP 8.5.2 + Kotlin 1.9.24, Java 17)
-            cat <<'EOF' > "$APP/build.gradle.kts"
-            plugins {
-              id("com.android.application") version "8.5.2"
-              id("org.jetbrains.kotlin.android") version "1.9.24"
+            kotlinOptions {
+              jvmTarget = "17"
             }
+          }
 
-            android {
-              namespace = "com.example.titan"
-              compileSdk = 34
+          dependencies {
+            implementation("androidx.core:core-ktx:1.13.1")
+            implementation("androidx.appcompat:appcompat:1.7.0")
+            implementation("com.google.android.material:material:1.12.0")
+            implementation("androidx.activity:activity-ktx:1.9.1")
+            implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+          }
+          EOF
 
-              defaultConfig {
-                applicationId = "com.example.titan"
-                minSdk = 26
-                targetSdk = 34
-                versionCode = 1
-                versionName = "1.0"
-              }
+          # AndroidManifest.xml
+          cat <<'EOF' > "${ROOT}/${APP}/src/main/AndroidManifest.xml"
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <application
+              android:label="Titan"
+              android:icon="@mipmap/ic_launcher">
+              <activity android:name=".MainActivity">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN" />
+                  <category android:name="android.intent.category.LAUNCHER" />
+                </intent-filter>
+              </activity>
+            </application>
+          </manifest>
+          EOF
 
-              buildTypes {
-                release {
-                  isMinifyEnabled = false
-                  proguardFiles(
-                    getDefaultProguardFile("proguard-android-optimize.txt"),
-                    "proguard-rules.pro"
-                  )
+          # MainActivity.kt
+          cat <<'EOF' > "${ROOT}/${APP}/src/main/java/com/example/titan/MainActivity.kt"
+          package com.example.titan
+
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.setContent
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Text
+
+          class MainActivity : ComponentActivity() {
+            override fun onCreate(savedInstanceState: Bundle?) {
+              super.onCreate(savedInstanceState)
+              setContent {
+                MaterialTheme {
+                  Text("Hello from Titan!")
                 }
               }
-
-              compileOptions {
-                sourceCompatibility = JavaVersion.VERSION_17
-                targetCompatibility = JavaVersion.VERSION_17
-              }
-              kotlinOptions {
-                jvmTarget = "17"
-              }
             }
+          }
+          EOF
 
-            dependencies {
-              implementation("androidx.core:core-ktx:1.13.1")
-              implementation("androidx.appcompat:appcompat:1.7.0")
-              implementation("com.google.android.material:material:1.12.0")
-            }
-            EOF
+          # strings.xml
+          cat <<'EOF' > "${ROOT}/${APP}/src/main/res/values/strings.xml"
+          <resources>
+            <string name="app_name">Titan</string>
+          </resources>
+          EOF
 
-            # Simple manifest
-            mkdir -p "$APP/src/main"
-            cat <<'EOF' > "$APP/src/main/AndroidManifest.xml"
-            <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-              package="com.example.titan">
-              <application
-                  android:label="@string/app_name"
-                  android:theme="@style/Theme.AppCompat.Light.NoActionBar">
-                <activity android:name="com.example.titan.MainActivity">
-                  <intent-filter>
-                    <action android:name="android.intent.action.MAIN" />
-                    <category android:name="android.intent.category.LAUNCHER" />
-                  </intent-filter>
-                </activity>
-              </application>
-            </manifest>
-            EOF
+          # themes.xml (very simple so build tools are happy)
+          mkdir -p "${ROOT}/${APP}/src/main/res/values/themes"
+          cat <<'EOF' > "${ROOT}/${APP}/src/main/res/values/themes/themes.xml"
+          <resources/>
+          EOF
 
-            # Minimal strings/themes
-            cat <<'EOF' > "$APP/src/main/res/values/strings.xml"
-            <resources>
-              <string name="app_name">Titan</string>
-            </resources>
-            EOF
+      - name: Verify project layout (fail-fast with hints)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== repo root =="
+          ls -la
+          echo "== quick tree (depth 2) =="
+          find "${PROJECT_ROOT}" -maxdepth 2 -print
 
-            cat <<'EOF' > "$APP/src/main/res/values/themes.xml"
-            <resources>
-              <style name="Theme.Titan" parent="Theme.AppCompat.Light.NoActionBar" />
-            </resources>
-            EOF
-
-            # Kotlin Activity that shows a hello text (no XML layout needed)
-            cat <<'EOF' > "$APP/src/main/java/com/example/titan/MainActivity.kt"
-            package com.example.titan
-
-            import android.os.Bundle
-            import android.widget.TextView
-            import androidx.appcompat.app.AppCompatActivity
-
-            class MainActivity : AppCompatActivity() {
-              override fun onCreate(savedInstanceState: Bundle?) {
-                super.onCreate(savedInstanceState)
-                val tv = TextView(this).apply { text = "Hello from Titan!" }
-                setContentView(tv)
-              }
-            }
-            EOF
-
-            echo "Tiny app created."
-          else
-            echo "App module already exists, not generating."
-          fi
-
-          # Final sanity: we must have Titan/app/build.gradle(.kts)
-          if [ ! -f "$APP/build.gradle" ] && [ ! -f "$APP/build.gradle.kts" ]; then
-            echo "::error::Found '$APP' but no build.gradle(.kts). Please add a Gradle module there."
+          SETTINGS_FILE="$(ls ${PROJECT_ROOT}/settings.gradle* 2>/dev/null || true)"
+          if [ -z "${SETTINGS_FILE}" ]; then
+            echo "::error::Missing settings.gradle(.kts) in '${PROJECT_ROOT}'."
             exit 1
           fi
 
-      # --- Build (uses plain Gradle 8.7 if no wrapper) ---
+          if [ ! -d "${PROJECT_ROOT}/${APP_MODULE}" ]; then
+            echo "::error::Expected directory '${PROJECT_ROOT}/${APP_MODULE}' (module '${APP_MODULE}') not found."
+            echo "::notice::Either set env APP_MODULE correctly or let the auto-create step make the module at that path."
+            exit 1
+          fi
+
+          echo "Using settings file: ${SETTINGS_FILE}"
+
       - name: Make gradlew executable (if present)
         working-directory: ${{ env.PROJECT_ROOT }}
         shell: bash
@@ -204,12 +224,12 @@ jobs:
         shell: bash
         run: |
           set -e
-          cd "${{ env.PROJECT_ROOT }}"
+          cd "${PROJECT_ROOT}"
           if [ -f ./gradlew ]; then
             echo "GRADLE_CMD=./gradlew" >> "$GITHUB_OUTPUT"
           else
             cd ~
-            curl -L -o gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
+            curl -sL -o gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
             unzip -q gradle.zip
             echo "$HOME/gradle-8.7/bin" >> "$GITHUB_PATH"
             echo "GRADLE_CMD=gradle" >> "$GITHUB_OUTPUT"
@@ -220,15 +240,14 @@ jobs:
         run: |
           set -e
           CMD="${{ steps.gradle.outputs.GRADLE_CMD }}"
-          "$CMD" -p "${{ env.PROJECT_ROOT }}" --no-daemon ":${{ env.APP_MODULE }}:assembleDebug" --stacktrace
+          "$CMD" -p "${PROJECT_ROOT}" --no-daemon :${APP_MODULE}:assembleDebug --stacktrace
 
-      # Helpful diagnostics if anything fails
       - name: Summarize Gradle errors (best-effort)
         if: failure()
         shell: bash
         run: |
           echo "==== Looking for Kotlin/Java error lines ===="
-          grep -RIn --line-number --no-messages -e "e: " -e " error: " -e "FAILED" "${{ env.PROJECT_ROOT }}" || true
+          grep -RIn --line-number --no-messages -e "e: " -e "error:" -e " FAILED" "${PROJECT_ROOT}" || true
 
       - name: Show any APKs that exist (any path)
         if: always()
@@ -236,18 +255,19 @@ jobs:
         run: |
           set -e
           echo "Searching for APKs..."
-          find . -type f -name "*.apk" -print || true
+          find -type f -name "*.apk" -print || true
 
       - name: "Debug: print project structure on failure"
         if: failure()
         shell: bash
         run: |
+          set -e
           echo "== repo root =="
           ls -la
           echo "== quick tree (depth 3) =="
-          find . -maxdepth 3 -type d -print
+          find "${PROJECT_ROOT}" -maxdepth 3 -print
           echo "== Gradle files =="
-          find . -maxdepth 3 \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle.kts" \) -print
+          find "${PROJECT_ROOT}" -maxdepth 3 \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" -o -name "settings.gradle.kts" \) -print
 
       - name: Upload APK artifact
         if: always()
@@ -255,6 +275,6 @@ jobs:
         with:
           name: titan-debug-apk
           path: |
-            ${{ env.PROJECT_ROOT }}/**/outputs/apk/**/*.apk
+            ${{ env.PROJECT_ROOT }}/${{ env.APP_MODULE }}/build/outputs/apk/**/*.apk
             **/build/outputs/apk/**/*.apk
           if-no-files-found: warn
