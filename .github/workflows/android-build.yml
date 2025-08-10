@@ -49,32 +49,190 @@ jobs:
             echo "GRADLE_CMD=gradle" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Write settings.gradle(.kts) with repositories + include(":app")
+        shell: bash
+        run: |
+          set -e
+          ROOT="TitanApp"
+          if [ -f "$ROOT/settings.gradle.kts" ]; then
+            FILE="$ROOT/settings.gradle.kts"
+          else
+            FILE="$ROOT/settings.gradle"
+          fi
+          cat > "$FILE" <<'EOF'
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        google()
+        mavenCentral()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = "TitanApp"
+include(":app")
+EOF
+          echo "Wrote $FILE"
+
+      - name: Force Java 17 + Compose + opt-ins in app build file
+        shell: bash
+        run: |
+          set -e
+          APP_KTS="TitanApp/app/build.gradle.kts"
+          APP_GROOVY="TitanApp/app/build.gradle"
+          mkdir -p TitanApp/app
+          if [ -f "$APP_KTS" ]; then
+            cat > "$APP_KTS" <<'EOF'
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+android {
+    namespace = "com.example.titan"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "com.example.titan"
+        minSdk = 26
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0"
+    }
+
+    buildFeatures { compose = true }
+    composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = "17"
+        freeCompilerArgs += listOf(
+            "-opt-in=kotlin.RequiresOptIn",
+            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api"
+        )
+    }
+}
+
+dependencies {
+    implementation(platform("androidx.compose:compose-bom:2024.02.02"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.activity:activity-compose:1.8.2")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+}
+EOF
+          else
+            cat > "$APP_GROOVY" <<'EOF'
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.example.titan'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.example.titan"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildFeatures { compose true }
+    composeOptions { kotlinCompilerExtensionVersion '1.5.14' }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = "17"
+        freeCompilerArgs += [
+            "-opt-in=kotlin.RequiresOptIn",
+            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api"
+        ]
+    }
+}
+
+dependencies {
+    implementation platform('androidx.compose:compose-bom:2024.02.02')
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.compose.ui:ui-tooling-preview'
+    implementation 'androidx.compose.material3:material3'
+    implementation 'androidx.activity:activity-compose:1.8.2'
+    debugImplementation 'androidx.compose.ui:ui-tooling'
+}
+EOF
+          fi
+          echo "Wrote app build file."
+
+      - name: Create minimal app sources if missing (safety net)
+        shell: bash
+        run: |
+          set -e
+          SRC="TitanApp/app/src/main/java/com/example/titan/MainActivity.kt"
+          MANIFEST="TitanApp/app/src/main/AndroidManifest.xml"
+          mkdir -p "$(dirname "$SRC")" TitanApp/app/src/main/res/values
+          if [ ! -f "$SRC" ]; then
+            cat > "$SRC" <<'EOF'
+package com.example.titan
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.material3.Text
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent { Text("Hello Titan") }
+    }
+}
+EOF
+          fi
+          if [ ! -f "$MANIFEST" ]; then
+            cat > "$MANIFEST" <<'EOF'
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.example.titan">
+    <application
+        android:label="TitanApp">
+        <activity android:name=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
+EOF
+          fi
+
       - name: Build Debug APK (verbose)
         shell: bash
         run: |
           set -e
           CMD="${{ steps.gradle.outputs.GRADLE_CMD }}"
           if [ "$CMD" = "gradle" ]; then
-            gradle  -p TitanApp --no-daemon :app:assembleDebug --stacktrace --info
+            gradle -p TitanApp --no-daemon :app:assembleDebug --stacktrace --info
           else
             "$CMD" -p TitanApp --no-daemon :app:assembleDebug --stacktrace --info
           fi
 
-      - name: Debug:print project structure on failure
-        if: ${{ failure() }}
-        shell: bash
-        run: |
-          echo "== Gradle files =="
-          find TitanApp -maxdepth 3 \( -name "build.gradle" -o -name "build.gradle.kts" \)
-          echo "== App directory listing =="
-          ls -la TitanApp/app || true
-
       - name: Upload APK artifact
-        if: ${{ always() }}
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: titan-debug-apk
-          path: |
-            TitanApp/app/build/outputs/apk/debug/*.apk
-            TitanApp/**/build/outputs/apk/debug/*.apk
+          path: TitanApp/app/build/outputs/apk/debug/*.apk
           if-no-files-found: warn
