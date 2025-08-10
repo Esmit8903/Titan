@@ -1,4 +1,4 @@
-name: Build Android (auto-detect)
+name: Build Android (Titan subdir)
 
 on:
   push:
@@ -8,16 +8,27 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    env:
+      PROJECT_ROOT: Titan
+      APP_MODULE: app
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
+      - name: Set up Java 17 (with Gradle caching)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
           cache: gradle
+          # Point cache scanning at the Titan/ subfolder so it won’t error
+          cache-dependency-path: |
+            Titan/**/build.gradle
+            Titan/**/build.gradle.kts
+            Titan/**/settings.gradle
+            Titan/**/settings.gradle.kts
+            Titan/**/gradle-wrapper.properties
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -25,37 +36,50 @@ jobs:
       - name: Install SDK components
         run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      # ---------- Detect project root and app module ----------
-      - name: Detect Android project + app module
-        id: detect
+      - name: Make gradlew executable if present
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          if [ -f ./gradlew ]; then chmod +x ./gradlew; fi
+
+      - name: Pick Gradle (wrapper or 8.7)
+        id: gradle
         shell: bash
         run: |
-          set -euo pipefail
-
-          # 1) Detect project root (directory that has settings.gradle or settings.gradle.kts)
-          ROOT="$(dirname "$(git ls-files | grep -E '(^|/)(settings\.gradle(\.kts)?)$' | head -n1 || true)")"
-          if [ -z "${ROOT:-}" ] || [ "${ROOT}" = "." ]; then
-            # Fallback: directory that has gradle.properties
-            ROOT="$(git ls-files | grep -E '(^|/)(gradle\.properties)$' | sed 's#/gradle\.properties##' | head -n1 || true)"
-          fi
-          if [ -z "${ROOT:-}" ]; then ROOT="."; fi
-
-          # 2) Detect app module (build.gradle* that applies com.android.application)
-          APP_MOD="$(grep -RIl --include=build.gradle --include=build.gradle.kts -e 'com\.android\.application' "$ROOT" | head -n1 || true)"
-          if [ -n "${APP_MOD:-}" ]; then
-            APP_MOD="${APP_MOD#$ROOT/}"               # strip ROOT prefix
-            APP_MOD="${APP_MOD%/build.gradle}"        # strip filename (Groovy)
-            APP_MOD="${APP_MOD%/build.gradle.kts}"    # strip filename (Kotlin)
-          fi
-          if [ -z "${APP_MOD:-}" ] && [ -d "$ROOT/app" ]; then
-            APP_MOD="app"
-          fi
-          if [ -z "${APP_MOD:-}" ]; then
-            echo "::error::Could not determine application module (com.android.application)."
-            echo "Looked under: $ROOT"
-            exit 2
+          set -e
+          cd "${PROJECT_ROOT}"
+          if [ -f ./gradlew ]; then
+            echo "GRADLE_CMD=./gradlew" >> "$GITHUB_OUTPUT"
+          else
+            cd ~
+            curl -L -o gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
+            unzip -q gradle.zip
+            echo "$HOME/gradle-8.7/bin" >> "$GITHUB_PATH"
+            echo "GRADLE_CMD=gradle" >> "$GITHUB_OUTPUT"
           fi
 
-          echo "project_dir=${ROOT}"      >> "$GITHUB_OUTPUT"
-          echo "app_module=${APP_MOD}"    >> "$GITHUB_OUTPUT"
-          echo "Detected project_dir=$ROOT ; app_module=$APP_MOD"
+      - name: Build Debug APK (capture full log)
+        shell: bash
+        run: |
+          set -e
+          CMD="${{ steps.gradle.outputs.GRADLE_CMD }}"
+          "$CMD" -p "${PROJECT_ROOT}" --no-daemon :${APP_MODULE}:assembleDebug --stacktrace --info
+
+      - name: Debug: print project structure on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "== Gradle files =="
+          find "${PROJECT_ROOT}" -maxdepth 2 \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" -o -name "settings.gradle.kts" \) -print
+          echo "== App directory listing =="
+          ls -la "${PROJECT_ROOT}/${APP_MODULE}" || true
+          echo "== APK output listing =="
+          ls -la "${PROJECT_ROOT}/${APP_MODULE}/build/outputs/apk/debug" || true
+
+      - name: Upload APK artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: titan-debug-apk
+          path: |
+            ${{ env.PROJECT_ROOT }}/${{ env.APP_MODULE }}/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
