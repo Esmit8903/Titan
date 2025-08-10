@@ -16,25 +16,19 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Java 17 (with Gradle caching)
+      - name: Set up Java 17 (Gradle cache)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
           cache: gradle
-          # Point cache scanning at the Titan/ subfolder
-          cache-dependency-path: |
-            Titan/**/build.gradle
-            Titan/**/build.gradle.kts
-            Titan/**/settings.gradle
-            Titan/**/settings.gradle.kts
-            Titan/**/gradle-wrapper.properties
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Install SDK components
-        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+        run: |
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
       - name: Make gradlew executable (if present)
         working-directory: ${{ env.PROJECT_ROOT }}
@@ -51,7 +45,7 @@ jobs:
           if [ -f ./gradlew ]; then
             echo "GRADLE_CMD=./gradlew" >> "$GITHUB_OUTPUT"
           else
-            cd ~
+            cd ..
             curl -L -o gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
             unzip -q gradle.zip -d "$HOME/gradle"
             echo "$HOME/gradle/gradle-8.7/bin" >> "$GITHUB_PATH"
@@ -63,7 +57,7 @@ jobs:
         run: |
           set -e
           cd "${PROJECT_ROOT}"
-          ${{ steps.gradle.outputs.GRADLE_CMD }} --no-daemon :${APP_MODULE}:assembleDebug --stacktrace --info
+          "${{ steps.gradle.outputs.GRADLE_CMD }}" --no-daemon ":${APP_MODULE}:assembleDebug" --stacktrace --info
 
       - name: "Debug: print project structure on failure"
         if: ${{ failure() }}
@@ -83,5 +77,5 @@ jobs:
           name: titan-debug-apk
           path: |
             ${{ env.PROJECT_ROOT }}/${{ env.APP_MODULE }}/build/outputs/apk/debug/*.apk
-            ${{ env.PROJECT_ROOT }}/**/build/outputs/apk/debug/*.apk
+            ${{ env.PROJECT_ROOT }}/${{ env.APP_MODULE }}/**/build/outputs/apk/debug/*.apk
           if-no-files-found: warn
