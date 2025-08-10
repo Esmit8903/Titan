@@ -210,7 +210,6 @@ jobs:
           CMD="${{ steps.gradle.outputs.GRADLE_CMD }}"
           "$CMD" -p "${PROJECT_ROOT}" --no-daemon \
             :${APP_MODULE}:assembleDebug --stacktrace --warning-mode=all -i
-
       - name: Summarize Gradle errors (best-effort)
         if: failure()
         shell: bash
