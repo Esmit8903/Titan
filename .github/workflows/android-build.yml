@@ -16,12 +16,13 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Java 17 (Gradle cache)
+      - name: Set up Java 17 (no Gradle cache scan)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
           cache: gradle
+          cache-dependency-path: '' # Disable scanning
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -77,5 +78,4 @@ jobs:
           name: titan-debug-apk
           path: |
             ${{ env.PROJECT_ROOT }}/${{ env.APP_MODULE }}/build/outputs/apk/debug/*.apk
-            ${{ env.PROJECT_ROOT }}/${{ env.APP_MODULE }}/**/build/outputs/apk/debug/*.apk
           if-no-files-found: warn
