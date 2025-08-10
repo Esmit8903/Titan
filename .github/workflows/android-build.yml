@@ -31,34 +31,44 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 1) Project root: prefer "Titan/" if it exists, otherwise "."
+          # 1) Project root: prefer Titan/ if it exists, else .
           ROOT="."
           if [ -d "Titan" ]; then ROOT="Titan"; fi
 
-          # 2) App module: find a module that applies the Android application plugin
-          #    Look for build.gradle / build.gradle.kts containing the plugin id.
-          APP_MOD="$(grep -RIlE "com\.android\.application" "$ROOT" \
-                    --include="build.gradle" --include="build.gradle.kts" \
-                    | head -n1 | sed -E "s|/build\.gradle(\.kts)?$||" | sed -E "s|^$ROOT/||")"
+          # 2) Try to detect a module that applies the Android application plugin
+          #    Allow grep to return 1 when no matches (don't fail the step).
+          APP_CANDIDATE="$(grep -RIlE "com\.android\.application" "$ROOT" \
+                           --include="build.gradle" --include="build.gradle.kts" \
+                           || true)"
 
-          # Fallback to "app" if that folder exists
-          if [ -z "${APP_MOD:-}" ] && [ -d "$ROOT/app" ]; then
+          if [ -n "$APP_CANDIDATE" ]; then
+            APP_MOD="$(printf '%s\n' "$APP_CANDIDATE" \
+                      | head -n1 \
+                      | sed -E 's|/build\.gradle(\.kts)?$||' \
+                      | sed -E "s|^$ROOT/||")"
+          else
+            APP_MOD=""
+          fi
+
+          # Fallback to 'app' if it exists
+          if [ -z "$APP_MOD" ] && [ -d "$ROOT/app" ]; then
             APP_MOD="app"
           fi
 
           echo "Detected ROOT='$ROOT'"
           echo "Detected APP_MOD='${APP_MOD:-<none>}'"
 
-          echo "ROOT=$ROOT" >> "$GITHUB_OUTPUT"
-          echo "APP_MOD=${APP_MOD}" >> "$GITHUB_OUTPUT"
+          # Export for later steps
+          echo "ROOT=$ROOT"     >> "$GITHUB_OUTPUT"
+          echo "APP_MOD=$APP_MOD" >> "$GITHUB_OUTPUT"
 
           echo "== quick tree =="
           find "$ROOT" -maxdepth 3 -type f \
-            \( -name "settings.gradle" -o -name "settings.gradle.kts" -o \
+            -name "settings.gradle" -o -name "settings.gradle.kts" -o \
                -name "build.gradle"   -o -name "build.gradle.kts"   -o \
-               -name "AndroidManifest.xml" \) -print | sed 's/^/  /'
+               -name "AndroidManifest.xml" -print | sed 's/^/  /'
 
-          if [ -z "${APP_MOD:-}" ]; then
+          if [ -z "$APP_MOD" ]; then
             echo "::warning::Could not detect an Android application module automatically."
           fi
 
@@ -79,7 +89,7 @@ jobs:
             echo "GRADLE_CMD=./gradlew" >> "$GITHUB_OUTPUT"
           else
             cd ..
-            curl -L -o gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
+            curl -sSL -o gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
             unzip -q gradle.zip -d "$HOME/gradle"
             echo "$HOME/gradle/gradle-8.7/bin" >> "$GITHUB_PATH"
             echo "GRADLE_CMD=gradle" >> "$GITHUB_OUTPUT"
@@ -101,20 +111,14 @@ jobs:
         run: |
           echo "== Gradle files =="
           find "${{ steps.detect.outputs.ROOT }}" -maxdepth 2 \
-            \( -name "build.gradle" -o -name "build.gradle.kts" -o \
-               -name "settings.gradle" -o -name "settings.gradle.kts" \) -print
+            -name "build.gradle" -o -name "build.gradle.kts" -o \
+               -name "settings.gradle" -o -name "settings.gradle.kts" -print || true
 
           echo "== App directory listing =="
-          ls -la "${{ steps.detect.outputs.ROOT }}/${{ steps.detect.outputs.APP_MOD }}" || true
+          if [ -n "${{ steps.detect.outputs.APP_MOD }}" ]; then
+            ls -la "${{ steps.detect.outputs.ROOT }}/${{ steps.detect.outputs.APP_MOD }}" || true
+          else
+            echo "(no APP_MOD detected)"
+          fi
 
           echo "== APK output listing =="
-          ls -la "${{ steps.detect.outputs.ROOT }}/${{ steps.detect.outputs.APP_MOD }}/build/outputs/apk/debug" || true
-
-      - name: Upload APK artifact
-        if: always() && steps.detect.outputs.APP_MOD != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: titan-debug-apk
-          path: |
-            ${{ steps.detect.outputs.ROOT }}/${{ steps.detect.outputs.APP_MOD }}/build/outputs/apk/debug/*.apk
-          if-no-files-found: warn
