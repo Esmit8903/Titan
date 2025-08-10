@@ -22,13 +22,12 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: gradle
-          # Point cache scanning at the Titan/ subfolder so it won’t error
           cache-dependency-path: |
             Titan/**/build.gradle
             Titan/**/build.gradle.kts
             Titan/**/settings.gradle
             Titan/**/settings.gradle.kts
-            Titan/**/gradle-wrapper.properties
+            Titan/**/gradle/wrapper/gradle-wrapper.properties
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -50,7 +49,7 @@ jobs:
           if [ -f ./gradlew ]; then
             echo "GRADLE_CMD=./gradlew" >> "$GITHUB_OUTPUT"
           else
-            cd ~
+            cd ..
             curl -L -o gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
             unzip -q gradle.zip
             echo "$HOME/gradle-8.7/bin" >> "$GITHUB_PATH"
@@ -61,11 +60,11 @@ jobs:
         shell: bash
         run: |
           set -e
-          CMD="${{ steps.gradle.outputs.GRADLE_CMD }}"
-          "$CMD" -p "${PROJECT_ROOT}" --no-daemon :${APP_MODULE}:assembleDebug --stacktrace --info
+          cd "${PROJECT_ROOT}"
+          ${{ steps.gradle.outputs.GRADLE_CMD }} :${APP_MODULE}:assembleDebug --stacktrace --no-daemon
 
       - name: Debug: print project structure on failure
-        if: failure()
+        if: ${{ failure() }}
         shell: bash
         run: |
           echo "== Gradle files =="
