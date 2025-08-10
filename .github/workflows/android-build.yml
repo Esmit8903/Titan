@@ -61,16 +61,16 @@ jobs:
           fi
 
       - name: Debug: print project structure on failure
-        if: failure()
+        if: ${{ failure() }}
         shell: bash
         run: |
-          echo "== Gradle files found =="
-          find TitanApp -maxdepth 3 \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle*" -o -name "AndroidManifest.xml" \) -print
+          echo "== Gradle files =="
+          find TitanApp -maxdepth 3 \( -name "build.gradle" -o -name "build.gradle.kts" \)
           echo "== App directory listing =="
           ls -la TitanApp/app || true
 
       - name: Upload APK artifact
-        if: always()
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: titan-debug-apk
