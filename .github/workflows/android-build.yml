@@ -60,7 +60,7 @@ jobs:
             "$CMD" -p TitanApp --no-daemon :app:assembleDebug --stacktrace --info
           fi
 
-      - name: Debug: print project structure on failure
+      - name: Debug:print project structure on failure
         if: ${{ failure() }}
         shell: bash
         run: |
