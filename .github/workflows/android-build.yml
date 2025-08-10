@@ -1,4 +1,4 @@
-name: Build Android (Titan subdir)
+name: Build Android (auto-detect)
 
 on:
   push:
@@ -7,10 +7,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
-    env:
-      PROJECT_ROOT: Titan
-      APP_MODULE: app
 
     steps:
       - name: Checkout repo
@@ -29,27 +25,48 @@ jobs:
         shell: bash
         run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Verify project layout (soft)
+      - name: Detect project root & app module
+        id: detect
         shell: bash
-        continue-on-error: true
         run: |
-          set -e
-          echo "== repo root =="
-          pwd; ls -la
-          echo "== ${PROJECT_ROOT} =="
-          ls -la "${PROJECT_ROOT}" || true
+          set -euo pipefail
+
+          # 1) Project root: prefer "Titan/" if it exists, otherwise "."
+          ROOT="."
+          if [ -d "Titan" ]; then ROOT="Titan"; fi
+
+          # 2) App module: find a module that applies the Android application plugin
+          #    Look for build.gradle / build.gradle.kts containing the plugin id.
+          APP_MOD="$(grep -RIlE "com\.android\.application" "$ROOT" \
+                    --include="build.gradle" --include="build.gradle.kts" \
+                    | head -n1 | sed -E "s|/build\.gradle(\.kts)?$||" | sed -E "s|^$ROOT/||")"
+
+          # Fallback to "app" if that folder exists
+          if [ -z "${APP_MOD:-}" ] && [ -d "$ROOT/app" ]; then
+            APP_MOD="app"
+          fi
+
+          echo "Detected ROOT='$ROOT'"
+          echo "Detected APP_MOD='${APP_MOD:-<none>}'"
+
+          echo "ROOT=$ROOT" >> "$GITHUB_OUTPUT"
+          echo "APP_MOD=${APP_MOD}" >> "$GITHUB_OUTPUT"
+
           echo "== quick tree =="
-          find "${PROJECT_ROOT}" -maxdepth 3 -type f \
-            \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" -o -name "settings.gradle.kts" -o -name "AndroidManifest.xml" \) \
-            -print | sed 's/^/  /'
-          if [ ! -d "${PROJECT_ROOT}/${APP_MODULE}" ]; then
-            echo "::warning::Expected '${PROJECT_ROOT}/${APP_MODULE}' not found. Adjust PROJECT_ROOT or APP_MODULE."
+          find "$ROOT" -maxdepth 3 -type f \
+            \( -name "settings.gradle" -o -name "settings.gradle.kts" -o \
+               -name "build.gradle"   -o -name "build.gradle.kts"   -o \
+               -name "AndroidManifest.xml" \) -print | sed 's/^/  /'
+
+          if [ -z "${APP_MOD:-}" ]; then
+            echo "::warning::Could not detect an Android application module automatically."
           fi
 
       - name: Make gradlew executable (if present)
-        working-directory: ${{ env.PROJECT_ROOT }}
         shell: bash
         run: |
+          set -e
+          cd "${{ steps.detect.outputs.ROOT }}"
           if [ -f ./gradlew ]; then chmod +x ./gradlew; fi
 
       - name: Pick Gradle (wrapper or 8.7)
@@ -57,7 +74,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          cd "${PROJECT_ROOT}"
+          cd "${{ steps.detect.outputs.ROOT }}"
           if [ -f ./gradlew ]; then
             echo "GRADLE_CMD=./gradlew" >> "$GITHUB_OUTPUT"
           else
@@ -69,28 +86,35 @@ jobs:
           fi
 
       - name: Build Debug APK (capture full log)
+        if: ${{ steps.detect.outputs.APP_MOD != '' }}
         shell: bash
         run: |
           set -e
-          cd "${PROJECT_ROOT}"
-          "${{ steps.gradle.outputs.GRADLE_CMD }}" --no-daemon ":${APP_MODULE}:assembleDebug" --stacktrace --info
+          cd "${{ steps.detect.outputs.ROOT }}"
+          "${{ steps.gradle.outputs.GRADLE_CMD }}" --no-daemon \
+            ":${{ steps.detect.outputs.APP_MOD }}:assembleDebug" \
+            --stacktrace --info
 
       - name: "Debug: print project structure on failure"
         if: ${{ failure() }}
         shell: bash
         run: |
           echo "== Gradle files =="
-          find "${PROJECT_ROOT}" -maxdepth 2 \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" -o -name "settings.gradle.kts" \) -print
+          find "${{ steps.detect.outputs.ROOT }}" -maxdepth 2 \
+            \( -name "build.gradle" -o -name "build.gradle.kts" -o \
+               -name "settings.gradle" -o -name "settings.gradle.kts" \) -print
+
           echo "== App directory listing =="
-          ls -la "${PROJECT_ROOT}/${APP_MODULE}" || true
+          ls -la "${{ steps.detect.outputs.ROOT }}/${{ steps.detect.outputs.APP_MOD }}" || true
+
           echo "== APK output listing =="
-          ls -la "${PROJECT_ROOT}/${APP_MODULE}/build/outputs/apk/debug" || true
+          ls -la "${{ steps.detect.outputs.ROOT }}/${{ steps.detect.outputs.APP_MOD }}/build/outputs/apk/debug" || true
 
       - name: Upload APK artifact
-        if: always()
+        if: always() && steps.detect.outputs.APP_MOD != ''
         uses: actions/upload-artifact@v4
         with:
           name: titan-debug-apk
           path: |
-            ${{ env.PROJECT_ROOT }}/${{ env.APP_MODULE }}/build/outputs/apk/debug/*.apk
+            ${{ steps.detect.outputs.ROOT }}/${{ steps.detect.outputs.APP_MOD }}/build/outputs/apk/debug/*.apk
           if-no-files-found: warn
