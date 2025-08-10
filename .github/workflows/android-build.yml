@@ -16,20 +16,34 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Java 17 (no Gradle cache scan)
+      # No Gradle cache -> avoids path matching errors
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
-          cache-dependency-path: '' # Disable scanning
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Install SDK components
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Verify project layout
+        shell: bash
         run: |
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          set -e
+          echo "== repo root =="
+          ls -la
+          echo "== ${PROJECT_ROOT} =="
+          ls -la "${PROJECT_ROOT}" || true
+          echo "== quick tree =="
+          find "${PROJECT_ROOT}" -maxdepth 3 -type f -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" -o -name "settings.gradle.kts" -o -name "AndroidManifest.xml" -print | sed 's/^/  /'
+          # Hard fail if the expected module folder is missing
+          if [ ! -d "${PROJECT_ROOT}/${APP_MODULE}" ]; then
+            echo "::error::Expected directory '${PROJECT_ROOT}/${APP_MODULE}' not found. Check your repo layout."
+            exit 2
+          fi
 
       - name: Make gradlew executable (if present)
         working-directory: ${{ env.PROJECT_ROOT }}
@@ -62,20 +76,3 @@ jobs:
 
       - name: "Debug: print project structure on failure"
         if: ${{ failure() }}
-        shell: bash
-        run: |
-          echo "== Gradle files =="
-          find "${PROJECT_ROOT}" -maxdepth 2 \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" -o -name "settings.gradle.kts" \) -print
-          echo "== App directory listing =="
-          ls -la "${PROJECT_ROOT}/${APP_MODULE}" || true
-          echo "== APK output listing =="
-          ls -la "${PROJECT_ROOT}/${APP_MODULE}/build/outputs/apk/debug" || true
-
-      - name: Upload APK artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: titan-debug-apk
-          path: |
-            ${{ env.PROJECT_ROOT }}/${{ env.APP_MODULE }}/build/outputs/apk/debug/*.apk
-          if-no-files-found: warn
