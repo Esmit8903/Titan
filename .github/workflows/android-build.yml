@@ -2,6 +2,9 @@ name: Build Titan (Debug APK)
 
 on:
   push:
+    paths:
+      - 'TitanApp_Rebuild.zip'
+      - '.github/workflows/android-build.yml'
   workflow_dispatch:
 
 jobs:
@@ -9,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Unzip project
@@ -20,6 +23,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -27,95 +31,50 @@ jobs:
       - name: Install SDK components
         run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Detect Android project dir
+      - name: Make gradlew executable (if present)
+        working-directory: TitanApp
+        run: |
+          if [ -f ./gradlew ]; then chmod +x ./gradlew; fi
+
+      - name: Pick Gradle (wrapper or 8.7)
+        id: gradle
         shell: bash
         run: |
-          set -e
-          D="$(dirname "$(find TitanApp -maxdepth 3 -name 'settings.gradle*' -print -quit || true)")"
-          if [ -z "$D" ] || [ "$D" = "." ]; then
-            D="$(find TitanApp -maxdepth 4 -type d -path '*/app' -print -quit | sed 's#/app$##')"
-          fi
-          echo "PROJECT_DIR=$D" >> $GITHUB_ENV
-          echo "Detected PROJECT_DIR=$D"
-
-      # ---- Write Gradle settings without heredocs (base64 avoids YAML issues on mobile) ----
-      - name: Write Gradle settings (groovy OR kts)
-        shell: bash
-        run: |
-          set -e
-          ROOT="$PROJECT_DIR"
-
-          # Kotlin DSL (settings.gradle.kts)
-          KTS_B64="cGx1Z2luTWFuYWdlbWVudCB7CiAgICByZXBvc2l0b3JpZXMgewogICAgICAgIGdyYWRsZVBsdWdpblBvcnRhbCgpCiAgICAgICAgZ29vZ2xlKCkKICAgICAgICBtYXZlbkNlbnRyYWwoKQogICAgfQp9CmRlcGVuZGVuY3lSZXNvbHV0aW9uTWFuYWdlbWVudCB7CiAgICByZXBvc2l0b3JpZXNNb2RlLnNldChSZXBvc2l0b3JpZXNNb2RlLkZBSUxfT05fUFJPSkVDVF9SRVBPUykKICAgIHJlcG9zaXRvcmllcyB7CiAgICAgICAgZ29vZ2xlKCkKICAgICAgICBtYXZlbkNlbnRyYWwoKQogICAgfQp9CnJvb3RQcm9qZWN0Lm5hbWUgPSAiVGl0YW5BcHAiCmluY2x1ZGUoIjphcHAiKQo="
-
-          # Groovy DSL (settings.gradle)
-          GRV_B64="cGx1Z2luTWFuYWdlbWVudCB7CiAgICByZXBvc2l0b3JpZXMgewogICAgICAgIGdyYWRsZVBsdWdpblBvcnRhbCgpCiAgICAgICAgZ29vZ2xlKCkKICAgICAgICBtYXZlbkNlbnRyYWwoKQogICAgfQp9CmRlcGVuZGVuY3lSZXNvbHV0aW9uTWFuYWdlbWVudCB7CiAgICByZXBvc2l0b3JpZXNNb2RlLnNldChSZXBvc2l0b3JpZXNNb2RlLkZBSUxfT05fUFJPSkVDVF9SRVBPUykKICAgIHJlcG9zaXRvcmllcyB7CiAgICAgICAgZ29vZ2xlKCkKICAgICAgICBtYXZlbkNlbnRyYWwoKQogICAgfQp9CnJvb3RQcm9qZWN0Lm5hbWUgPSAiVGl0YW5BcHAiCmluY2x1ZGUoIjphcHAiKQo="
-
-          if [ -f "$ROOT/settings.gradle.kts" ]; then
-            echo "$KTS_B64" | base64 -d > "$ROOT/settings.gradle.kts"
+          if [ -f TitanApp/gradlew ]; then
+            echo "GRADLE_CMD=TitanApp/gradlew" >> "$GITHUB_OUTPUT"
           else
-            echo "$GRV_B64" | base64 -d > "$ROOT/settings.gradle"
-          fi
-
-          echo "Wrote Gradle settings in $ROOT"
-
-      - name: Force Java/Kotlin 17 across modules
-        shell: bash
-        run: |
-          set -e
-          mapfile -t FILES < <(find "$PROJECT_DIR" -maxdepth 4 -type f \( -name 'build.gradle' -o -name 'build.gradle.kts' \))
-          for F in "${FILES[@]}"; do
-            # sanitize non-ascii
-            LC_ALL=C tr -cd '\11\12\15\40-\176' < "$F" > "$F.clean" && mv "$F.clean" "$F"
-
-            # upgrade Java / Kotlin targets
-            sed -i 's/JavaVersion\.VERSION_1_8/JavaVersion.VERSION_17/g' "$F"
-            sed -i 's/sourceCompatibility *[:=][^A-Za-z0-9]*1\.8/sourceCompatibility JavaVersion.VERSION_17/g' "$F"
-            sed -i 's/targetCompatibility *[:=][^A-Za-z0-9]*1\.8/targetCompatibility JavaVersion.VERSION_17/g' "$F"
-            sed -i 's/jvmTarget *[:=] *["'\'']\?[0-9][0-9]*["'\'']\?/jvmTarget = "17"/g' "$F"
-
-            # ensure compileOptions
-            if grep -q "android *{" "$F" && ! grep -q "compileOptions" "$F"; then
-              awk 'BEGIN{ins=0} /android *\{/ && ins==0 {print; print "    compileOptions {"; print "        sourceCompatibility JavaVersion.VERSION_17"; print "        targetCompatibility JavaVersion.VERSION_17"; print "    }"; ins=1; next} {print}' "$F" > tmp && mv tmp "$F"
-            fi
-
-            # ensure kotlinOptions
-            if grep -q "android *{" "$F" && ! grep -q "kotlinOptions" "$F"; then
-              awk 'BEGIN{ins=0} /android *\{/ && ins==0 {print; print "    kotlinOptions {"; print "        jvmTarget = \"17\""; print "    }"; ins=1; next} {print}' "$F" > tmp && mv tmp "$F"
-            fi
-          done
-
-      - name: Use Gradle wrapper if available, else add Gradle 8.7 to PATH
-        shell: bash
-        run: |
-          if [ -f "$PROJECT_DIR/gradlew" ]; then
-            echo "WRAPPER=1" >> $GITHUB_ENV
-            chmod +x "$PROJECT_DIR/gradlew"
-          else
-            echo "WRAPPER=0" >> $GITHUB_ENV
             curl -L -o gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
-            unzip -q gradle.zip -d $HOME/gradle
-            echo "$HOME/gradle/gradle-8.7/bin" >> $GITHUB_PATH
+            unzip -q gradle.zip -d "$HOME/gradle"
+            echo "$HOME/gradle/gradle-8.7/bin" >> "$GITHUB_PATH"
+            echo "GRADLE_CMD=gradle" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build Debug APK (verbose)
         shell: bash
         run: |
           set -e
-          if [ "$WRAPPER" = "1" ]; then
-            "$PROJECT_DIR/gradlew" -p "$PROJECT_DIR" --no-daemon :app:assembleDebug --stacktrace --info
+          CMD="${{ steps.gradle.outputs.GRADLE_CMD }}"
+          if [ "$CMD" = "gradle" ]; then
+            gradle  -p TitanApp --no-daemon :app:assembleDebug --stacktrace --info
           else
-            gradle -v
-            gradle -p "$PROJECT_DIR" --no-daemon :app:assembleDebug --stacktrace --info
+            "$CMD" -p TitanApp --no-daemon :app:assembleDebug --stacktrace --info
           fi
-          echo "=== Built files ==="
-          find "$PROJECT_DIR" -type f \( -name '*.apk' -o -name '*.aab' \) -print || true
 
-      - name: Upload build artifacts
+      - name: Debug: print project structure on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "== Gradle files found =="
+          find TitanApp -maxdepth 3 \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle*" -o -name "AndroidManifest.xml" \) -print
+          echo "== App directory listing =="
+          ls -la TitanApp/app || true
+
+      - name: Upload APK artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: titan-debug-artifacts
+          name: titan-debug-apk
           path: |
-            ${{ env.PROJECT_DIR }}/**/build/outputs/**/*.apk
-            ${{ env.PROJECT_DIR }}/**/build/outputs/**/*.aab
-          retention-days: 14
+            TitanApp/app/build/outputs/apk/debug/*.apk
+            TitanApp/**/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
