@@ -1,0 +1,232 @@
+name: Build Android (auto-fix if project missing)
+
+on:
+  push:
+  workflow_dispatch:
+
+env:
+  PROJECT_ROOT: Titan          # where the project should live
+  APP_MODULE: app              # module we build
+  ALLOW_GENERATE: "true"       # "false" => fail if project missing
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: If present, unzip TitanApp_Rebuild.zip into Titan/
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f "Titan/TitanApp_Rebuild.zip" ]; then
+            echo "Found Titan/TitanApp_Rebuild.zip, unzipping into Titan/ ..."
+            unzip -q -o "Titan/TitanApp_Rebuild.zip" -d "Titan" || true
+          else
+            echo "No Titan/TitanApp_Rebuild.zip present. Continuing."
+          fi
+
+      - name: Ensure Gradle project exists (or generate tiny app)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="${PROJECT_ROOT}"
+          MOD="${APP_MODULE}"
+
+          has_settings="no"
+          if [ -f "$ROOT/settings.gradle.kts" ] || [ -f "$ROOT/settings.gradle" ]; then
+            has_settings="yes"
+          fi
+
+          if [ "$has_settings" = "yes" ]; then
+            echo "Gradle project detected under $ROOT"
+            exit 0
+          fi
+
+          if [ "${ALLOW_GENERATE}" != "true" ]; then
+            echo "::error::No Gradle project found under $ROOT (settings.gradle[.kts] missing)."
+            exit 1
+          fi
+
+          echo "No Gradle project found. Generating a minimal Android app under $ROOT/$MOD ..."
+
+          mkdir -p "$ROOT/$MOD/src/main/java/com/example/titan" \
+                   "$ROOT/$MOD/src/main/res/values"
+
+          cat > "$ROOT/settings.gradle.kts" <<'EOF'
+          pluginManagement {
+              repositories {
+                  gradlePluginPortal()
+                  google()
+                  mavenCentral()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "TitanApp"
+          include(":app")
+          EOF
+
+          cat > "$ROOT/build.gradle.kts" <<'EOF'
+          // top-level build file (empty for modern AGP)
+          EOF
+
+          cat > "$ROOT/gradle.properties" <<'EOF'
+          org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          EOF
+
+          cat > "$ROOT/$MOD/build.gradle.kts" <<'EOF'
+          plugins {
+              id("com.android.application") version "8.5.2"
+              id("org.jetbrains.kotlin.android") version "1.9.24"
+          }
+
+          android {
+              namespace = "com.example.titan"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.example.titan"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                  }
+              }
+
+              buildFeatures {
+                  compose = false
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              implementation(platform("org.jetbrains.kotlin:kotlin-bom:1.9.24"))
+              implementation("androidx.core:core-ktx:1.12.0")
+              implementation("androidx.appcompat:appcompat:1.6.1")
+              implementation("com.google.android.material:material:1.11.0")
+          }
+          EOF
+
+          cat > "$ROOT/$MOD/src/main/AndroidManifest.xml" <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="com.example.titan">
+              <application
+                  android:label="TitanApp"
+                  android:allowBackup="true">
+                  <activity android:name="com.example.titan.MainActivity">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > "$ROOT/$MOD/src/main/java/com/example/titan/MainActivity.kt" <<'EOF'
+          package com.example.titan
+
+          import android.app.Activity
+          import android.os.Bundle
+
+          class MainActivity : Activity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+              }
+          }
+          EOF
+
+          cat > "$ROOT/$MOD/src/main/res/values/strings.xml" <<'EOF'
+          <resources>
+              <string name="app_name">TitanApp</string>
+          </resources>
+          EOF
+
+          echo "Minimal project generated."
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK components
+        shell: bash
+        run: |
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Make gradlew executable (if present)
+        working-directory: ${{ env.PROJECT_ROOT }}
+        shell: bash
+        run: |
+          if [ -f ./gradlew ]; then chmod +x ./gradlew; fi
+
+      - name: Pick Gradle (wrapper or 8.7)
+        id: gradle
+        shell: bash
+        run: |
+          set -e
+          cd "${PROJECT_ROOT}"
+          if [ -f ./gradlew ]; then
+            echo "GRADLE_CMD=./gradlew" >> "$GITHUB_OUTPUT"
+          else
+            cd ..
+            curl -sSLo gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
+            unzip -q gradle.zip -d "$HOME/gradle"
+            echo "$HOME/gradle/gradle-8.7/bin" >> "$GITHUB_PATH"
+            echo "GRADLE_CMD=gradle" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Debug APK (capture full log)
+        shell: bash
+        run: |
+          set -e
+          CMD="${{ steps.gradle.outputs.GRADLE_CMD }}"
+          "$CMD" -p "${PROJECT_ROOT}" --no-daemon :${APP_MODULE}:assembleDebug --stacktrace -i
+
+      - name: Debug: print project structure on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "== repo root =="
+          ls -la
+          echo "== quick tree (depth 3) =="
+          find "${PROJECT_ROOT}" -maxdepth 3 -printf "%y %p\n" | sed 's/^/  /'
+          echo "== APK output listing =="
+          find "${PROJECT_ROOT}" -path "*/outputs/apk/debug/*.apk" -print || true
+
+      - name: Upload APK artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: titan-debug-apk
+          path: |
+            ${{ env.PROJECT_ROOT }}/**/outputs/apk/debug/*.apk
+          if-no-files-found: warn
