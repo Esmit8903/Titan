@@ -218,7 +218,9 @@ jobs:
          echo "==== Looking for Kotlin/Java error lines ===="
     # show last 300 lines of the job log Gradle printed (already on stdout)
     # plus common compiler markers if present in build/ logs
-    grep -RIn --line-number --no-messages -e "^e: " -e "error:" -e "FAILED" "${PROJECT_ROOT}" || true
+        grep -RIn --line-number --no-messages -e "^e: "
+        -e "error:" -e "FAILED" "${PROJECT_ROOT}" || true
+     
       - name: Show any APKs that exist (any path)
         if: always()
         shell: bash
