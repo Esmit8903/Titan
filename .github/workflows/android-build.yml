@@ -3,8 +3,9 @@ name: Build Titan (Debug APK)
 on:
   push:
     paths:
-      - "TitanApp_Rebuild.zip"
       - ".github/workflows/android-build.yml"
+      - "TitanApp_Rebuild.zip"
+      - "TitanApp/**"
   workflow_dispatch:
 
 jobs:
@@ -36,15 +37,14 @@ jobs:
         shell: bash
         run: |
           set -e
-          # Prefer TitanApp if present; otherwise search
-          if [ -d TitanApp/app ]; then
-            D="TitanApp"
+          # Try TitanApp/app first (typical), else TitanApp
+          if [ -f TitanApp/app/build.gradle ] || [ -f TitanApp/app/build.gradle.kts ]; then
+            echo "PROJECT_DIR=TitanApp" >> "$GITHUB_OUTPUT"
+            echo "Detected PROJECT_DIR=TitanApp"
           else
-            D="$(dirname "$(find . -maxdepth 3 -name app -type d | head -n1)")"
-            D="${D:-.}"
+            echo "PROJECT_DIR=TitanApp" >> "$GITHUB_OUTPUT"
+            echo "Detected PROJECT_DIR=TitanApp"
           fi
-          echo "PROJECT_DIR=$D" >> "$GITHUB_OUTPUT"
-          echo "Detected PROJECT_DIR=$D"
 
       - name: Make gradlew executable (if present)
         working-directory: ${{ steps.detect.outputs.PROJECT_DIR }}
@@ -68,101 +68,104 @@ jobs:
             echo "GRADLE_CMD=gradle" >> "$GITHUB_OUTPUT"
           fi
 
-      # ---------- FIXED: correctly indented here-doc body ----------
-      - name: Write settings.gradle(.kts) with repositories + include(":app")
+      # ---------- Write settings.gradle.kts without here-docs ----------
+      - name: Write settings.gradle.kts with repositories + include(":app")
         shell: bash
         run: |
           set -e
           ROOT="${{ steps.detect.outputs.PROJECT_DIR }}"
-          cat > "$ROOT/settings.gradle.kts" <<'EOF'
-          pluginManagement {
-            repositories {
-              gradlePluginPortal()
-              google()
-              mavenCentral()
-            }
-            plugins {
-              id("com.android.application") version "8.5.2"
-              id("org.jetbrains.kotlin.android") version "1.9.24"
-            }
-          }
-          dependencyResolutionManagement {
-            repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-            repositories {
-              google()
-              mavenCentral()
-            }
-          }
-          rootProject.name = "TitanApp"
-          include(":app")
-          EOF
-          echo "Wrote $ROOT/settings.gradle.kts"
+          FILE="$ROOT/settings.gradle.kts"
 
+          # Overwrite with a known-good file
+          printf '%s\n' \
+            'pluginManagement {' \
+            '  repositories {' \
+            '    gradlePluginPortal()' \
+            '    google()' \
+            '    mavenCentral()' \
+            '  }' \
+            '  plugins {' \
+            '    id("com.android.application") version "8.5.2"' \
+            '    id("org.jetbrains.kotlin.android") version "1.9.24"' \
+            '  }' \
+            '}' \
+            '' \
+            'dependencyResolutionManagement {' \
+            '  repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)' \
+            '  repositories {' \
+            '    google()' \
+            '    mavenCentral()' \
+            '  }' \
+            '}' \
+            '' \
+            'rootProject.name = "TitanApp"' \
+            'include(":app")' \
+            > "$FILE"
+
+          echo "Wrote $FILE"
+          sed -n '1,200p' "$FILE"
+
+      # ---------- Ensure/patch app/build.gradle.kts without here-docs ----------
       - name: Ensure app/build.gradle.kts exists and is compatible
         shell: bash
         run: |
           set -e
           APP_KTS="${{ steps.detect.outputs.PROJECT_DIR }}/app/build.gradle.kts"
+          mkdir -p "${APP_KTS%/*}"
+
           if [ ! -f "$APP_KTS" ]; then
-            mkdir -p "${{ steps.detect.outputs.PROJECT_DIR }}/app"
-            cat > "$APP_KTS" <<'EOF'
-            plugins {
-              id("com.android.application")
-              id("org.jetbrains.kotlin.android")
-            }
-
-            android {
-              namespace = "com.example.titan"
-              compileSdk = 34
-
-              defaultConfig {
-                applicationId = "com.example.titan"
-                minSdk = 26
-                targetSdk = 34
-                versionCode = 1
-                versionName = "1.0"
-              }
-
-              buildFeatures { compose = true }
-              composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
-
-              compileOptions {
-                sourceCompatibility = JavaVersion.VERSION_17
-                targetCompatibility = JavaVersion.VERSION_17
-              }
-            }
-
-            kotlin {
-              jvmToolchain(17)
-            }
-
-            dependencies {
-              implementation(platform("org.jetbrains.kotlin:kotlin-bom"))
-              implementation("androidx.core:core-ktx:1.12.0")
-              implementation("androidx.appcompat:appcompat:1.6.1")
-            }
-            EOF
-            echo "Created minimal app/build.gradle.kts"
-          else
-            echo "Found existing app/build.gradle.kts"
-            # Best-effort patch: ensure Java 17 compile options are present
-            if ! grep -q "compileOptions" "$APP_KTS"; then
-              awk '
-                BEGIN{added=0}
-                /android *\{/ {inA=1}
-                inA && /composeOptions/ && !added {
-                  print
-                  print "  compileOptions {"
-                  print "    sourceCompatibility = JavaVersion.VERSION_17"
-                  print "    targetCompatibility = JavaVersion.VERSION_17"
-                  print "  }"
-                  added=1; next
-                }
-                {print}
-              ' "$APP_KTS" > tmp && mv tmp "$APP_KTS"
-              echo "Patched compileOptions for Java 17"
-            fi
+            printf '%s\n' \
+              'plugins {' \
+              '  id("com.android.application")' \
+              '  id("org.jetbrains.kotlin.android")' \
+              '}' \
+              '' \
+              'android {' \
+              '  namespace = "com.example.titan"' \
+              '  compileSdk = 34' \
+              '' \
+              '  defaultConfig {' \
+              '    applicationId = "com.example.titan"' \
+              '    minSdk = 26' \
+              '    targetSdk = 34' \
+              '    versionCode = 1' \
+              '    versionName = "1.0"' \
+              '  }' \
+              '' \
+              '  buildFeatures { compose = true }' \
+              '  composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }' \
+              '' \
+              '  compileOptions {' \
+              '    sourceCompatibility = JavaVersion.VERSION_17' \
+              '    targetCompatibility = JavaVersion.VERSION_17' \
+              '  }' \
+              '' \
+              '  kotlinOptions {' \
+              '    jvmTarget = "17"' \
+              '    freeCompilerArgs += listOf(' \
+              '      "-Xskip-prerelease-check",' \
+              '      "-opt-in=kotlin.RequiresOptIn"' \
+              '    )' \
+              '  }' \
+              '}' \
+              '' \
+              'dependencies {' \
+              '  implementation(platform("org.jetbrains.kotlin:kotlin-bom:1.9.24"))' \
+              '  implementation("androidx.core:core-ktx:1.12.0")' \
+              '  implementation("androidx.appcompat:appcompat:1.6.1")' \
+              '}' \
+              > "$APP_KTS"
+            echo "Created $APP_KTS"
           fi
+
+          # Ensure Java 17 compileOptions exist (if user file lacked it)
+          if ! grep -q 'compileOptions' "$APP_KTS"; then
+            awk '1; /android *\{/ && !ins {print "  compileOptions { sourceCompatibility = JavaVersion.VERSION_17"; print "    targetCompatibility = JavaVersion.VERSION_17"; print "  }"; ins=1}' "$APP_KTS" > tmp && mv tmp "$APP_KTS"
+            echo "Patched compileOptions into $APP_KTS"
+          fi
+
+          echo "Final $APP_KTS:"
+          sed -n '1,220p' "$APP_KTS"
 
       - name: Build Debug APK (verbose)
         shell: bash
@@ -176,7 +179,7 @@ jobs:
         shell: bash
         run: |
           echo "== Gradle files found =="
-          find "${{ steps.detect.outputs.PROJECT_DIR }}" -maxdepth 3 \( -name "build.gradle" -o -name "build.gradle.kts" \)
+          find "${{ steps.detect.outputs.PROJECT_DIR }}" -maxdepth 3 \( -name "build.gradle" -o -name "build.gradle.kts" \) -print
           echo "== App directory listing =="
           ls -la "${{ steps.detect.outputs.PROJECT_DIR }}/app" || true
 
