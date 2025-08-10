@@ -2,9 +2,6 @@ name: Build Titan (Debug APK)
 
 on:
   push:
-    paths:
-      - "TitanApp_Rebuild.zip"
-      - ".github/workflows/android-build.yml"
   workflow_dispatch:
 
 jobs:
@@ -15,24 +12,45 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Unzip project
-        run: unzip -q TitanApp_Rebuild.zip -d TitanApp
+      - name: Unzip project (if zip exists)
+        shell: bash
+        run: |
+          set -e
+          if [ -f TitanApp_Rebuild.zip ]; then
+            unzip -q TitanApp_Rebuild.zip -d TitanApp
+          fi
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
           cache: gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Install SDK components
-        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+        run: |
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Detect Android project dir
+        id: detect
+        shell: bash
+        run: |
+          set -e
+          D="TitanApp"
+          if [ ! -d "$D" ]; then
+            D="$(find . -maxdepth 2 -name settings.gradle -o -name settings.gradle.kts -printf '%h\n' | head -n1)"
+            D="${D:-.}"
+          fi
+          D="${D#./}"
+          echo "PROJECT_DIR=$D" >> "$GITHUB_OUTPUT"
+          echo "Detected PROJECT_DIR=$D"
 
       - name: Make gradlew executable (if present)
-        working-directory: TitanApp
+        working-directory: ${{ steps.detect.outputs.PROJECT_DIR }}
+        shell: bash
         run: |
           if [ -f ./gradlew ]; then chmod +x ./gradlew; fi
 
@@ -40,12 +58,15 @@ jobs:
         id: gradle
         shell: bash
         run: |
-          if [ -f TitanApp/gradlew ]; then
-            echo "GRADLE_CMD=TitanApp/gradlew" >> "$GITHUB_OUTPUT"
+          set -e
+          cd "${{ steps.detect.outputs.PROJECT_DIR }}"
+          if [ -f ./gradlew ]; then
+            echo "GRADLE_CMD=./gradlew" >> "$GITHUB_OUTPUT"
           else
+            cd ~
             curl -L -o gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
-            unzip -q gradle.zip -d "$HOME/gradle"
-            echo "$HOME/gradle/gradle-8.7/bin" >> "$GITHUB_PATH"
+            unzip -q gradle.zip
+            echo "$HOME/gradle-8.7/bin" >> "$GITHUB_PATH"
             echo "GRADLE_CMD=gradle" >> "$GITHUB_OUTPUT"
           fi
 
@@ -53,125 +74,147 @@ jobs:
         shell: bash
         run: |
           set -e
-          ROOT="TitanApp"
+          ROOT="${{ steps.detect.outputs.PROJECT_DIR }}"
           if [ -f "$ROOT/settings.gradle.kts" ]; then
             FILE="$ROOT/settings.gradle.kts"
-          else
-            FILE="$ROOT/settings.gradle"
-          fi
-          cat > "$FILE" <<'EOF'
+            cat > "$FILE" <<'EOF'
 pluginManagement {
-    repositories {
-        gradlePluginPortal()
-        google()
-        mavenCentral()
-    }
+  repositories {
+    gradlePluginPortal()
+    google()
+    mavenCentral()
+  }
 }
 dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories {
-        google()
-        mavenCentral()
-    }
+  repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+  repositories {
+    google()
+    mavenCentral()
+  }
 }
 rootProject.name = "TitanApp"
 include(":app")
 EOF
+          else
+            FILE="$ROOT/settings.gradle"
+            cat > "$FILE" <<'EOF'
+pluginManagement {
+  repositories {
+    gradlePluginPortal()
+    google()
+    mavenCentral()
+  }
+}
+dependencyResolutionManagement {
+  repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+  repositories {
+    google()
+    mavenCentral()
+  }
+}
+rootProject.name = "TitanApp"
+include(":app")
+EOF
+          fi
           echo "Wrote $FILE"
 
       - name: Force Java 17 + Compose opts in app build file
         shell: bash
         run: |
           set -e
-          APP_KTS="TitanApp/app/build.gradle.kts"
-          APP_GROOVY="TitanApp/app/build.gradle"
-          mkdir -p TitanApp/app
+          APP_KTS="${{ steps.detect.outputs.PROJECT_DIR }}/app/build.gradle.kts"
+          APP_GROOVY="${{ steps.detect.outputs.PROJECT_DIR }}/app/build.gradle"
+          mkdir -p "${{ steps.detect.outputs.PROJECT_DIR }}/app"
 
           if [ -f "$APP_KTS" ]; then
             cat > "$APP_KTS" <<'EOF'
 plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.android")
+  id("com.android.application")
+  id("org.jetbrains.kotlin.android")
 }
 
 android {
-    namespace = "com.example.titan"
-    compileSdk = 34
+  namespace = "com.example.titan"
+  compileSdk = 34
 
-    defaultConfig {
-        applicationId = "com.example.titan"
-        minSdk = 26
-        targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
-    }
+  defaultConfig {
+    applicationId = "com.example.titan"
+    minSdk = 26
+    targetSdk = 34
+    versionCode = 1
+    versionName = "1.0"
+  }
 
-    buildFeatures { compose = true }
+  buildFeatures { compose = true }
 
-    composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
+  composeOptions {
+    kotlinCompilerExtensionVersion = "1.5.14"
+  }
 
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
+  compileOptions {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+  }
 
-    kotlinOptions {
-        jvmTarget = "17"
-        freeCompilerArgs += listOf(
-            "-Xskip-prerelease-check",
-            "-opt-in=kotlin.RequiresOptIn"
-        )
-    }
+  kotlinOptions {
+    jvmTarget = "17"
+    freeCompilerArgs += listOf(
+      "-Xskip-prerelease-check",
+      "-opt-in=kotlin.RequiresOptIn"
+    )
+  }
 }
 
 dependencies {
-    implementation(platform("org.jetbrains.kotlin:kotlin-bom"))
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.appcompat:appcompat:1.6.1")
+  implementation(platform("org.jetbrains.kotlin:kotlin-bom:1.9.24"))
+  implementation("androidx.core:core-ktx:1.12.0")
+  implementation("androidx.appcompat:appcompat:1.6.1")
 }
 EOF
           elif [ -f "$APP_GROOVY" ]; then
             cat > "$APP_GROOVY" <<'EOF'
 plugins {
-    id 'com.android.application'
-    id 'org.jetbrains.kotlin.android'
+  id 'com.android.application'
+  id 'org.jetbrains.kotlin.android'
 }
 
 android {
-    namespace 'com.example.titan'
-    compileSdk 34
+  namespace 'com.example.titan'
+  compileSdk 34
 
-    defaultConfig {
-        applicationId 'com.example.titan'
-        minSdk 26
-        targetSdk 34
-        versionCode 1
-        versionName '1.0'
-    }
+  defaultConfig {
+    applicationId 'com.example.titan'
+    minSdk 26
+    targetSdk 34
+    versionCode 1
+    versionName '1.0'
+  }
 
-    buildFeatures { compose true }
+  buildFeatures { compose true }
 
-    composeOptions { kotlinCompilerExtensionVersion '1.5.14' }
+  composeOptions {
+    kotlinCompilerExtensionVersion '1.5.14'
+  }
 
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
-    }
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
 
-    kotlinOptions {
-        jvmTarget = '17'
-        freeCompilerArgs += ['-Xskip-prerelease-check', '-opt-in=kotlin.RequiresOptIn']
-    }
+  kotlinOptions {
+    jvmTarget = '17'
+    freeCompilerArgs += ['-Xskip-prerelease-check', '-opt-in=kotlin.RequiresOptIn']
+  }
 }
 
 dependencies {
-    implementation platform('org.jetbrains.kotlin:kotlin-bom')
-    implementation 'androidx.core:core-ktx:1.12.0'
-    implementation 'androidx.appcompat:appcompat:1.6.1'
+  implementation platform('org.jetbrains.kotlin:kotlin-bom:1.9.24')
+  implementation 'androidx.core:core-ktx:1.12.0'
+  implementation 'androidx.appcompat:appcompat:1.6.1'
 }
 EOF
           else
-            echo "::error::Neither build.gradle.kts nor build.gradle found under TitanApp/app"
+            echo "No app/build.gradle(.kts) found under ${{ steps.detect.outputs.PROJECT_DIR }}/app" >&2
             exit 1
           fi
 
@@ -180,20 +223,14 @@ EOF
         run: |
           set -e
           CMD="${{ steps.gradle.outputs.GRADLE_CMD }}"
-          if [ "$CMD" = "gradle" ]; then
-            gradle -p TitanApp --no-daemon :app:assembleDebug --stacktrace --info
+          cd "${{ steps.detect.outputs.PROJECT_DIR }}"
+          if [ "$CMD" = "./gradlew" ]; then
+            "$CMD" --no-daemon :app:assembleDebug --stacktrace --info
           else
-            "$CMD" -p TitanApp --no-daemon :app:assembleDebug --stacktrace --info
+            "$CMD"  --no-daemon :app:assembleDebug --stacktrace --info
           fi
-
-      - name: Debug: print project structure on failure
-        if: failure()
-        shell: bash
-        run: |
-          echo "== Gradle files =="
-          find TitanApp -maxdepth 3 \( -name "build.gradle" -o -name "build.gradle.kts" \)
-          echo "== App directory listing =="
-          ls -la TitanApp/app || true
+          echo "=== Built files ==="
+          find app -type f \( -name '*.apk' -o -name '*.aab' \) -print || true
 
       - name: Upload APK artifact
         if: always()
@@ -201,6 +238,6 @@ EOF
         with:
           name: titan-debug-apk
           path: |
-            TitanApp/app/build/outputs/apk/debug/*.apk
-            TitanApp/**/build/outputs/apk/debug/*.apk
+            ${{ steps.detect.outputs.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+            ${{ steps.detect.outputs.PROJECT_DIR }}/**/build/outputs/apk/debug/*.apk
           if-no-files-found: warn
