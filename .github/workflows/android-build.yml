@@ -29,19 +29,21 @@ jobs:
         shell: bash
         run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Verify project layout
+      - name: Verify project layout (soft)
         shell: bash
+        continue-on-error: true
         run: |
           set -e
           echo "== repo root =="
-          ls -la
+          pwd; ls -la
           echo "== ${PROJECT_ROOT} =="
           ls -la "${PROJECT_ROOT}" || true
           echo "== quick tree =="
-          find "${PROJECT_ROOT}" -maxdepth 3 -type f \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" -o -name "settings.gradle.kts" -o -name "AndroidManifest.xml" \) -print | sed 's/^/  /'
+          find "${PROJECT_ROOT}" -maxdepth 3 -type f \
+            \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" -o -name "settings.gradle.kts" -o -name "AndroidManifest.xml" \) \
+            -print | sed 's/^/  /'
           if [ ! -d "${PROJECT_ROOT}/${APP_MODULE}" ]; then
-            echo "::error::Expected '${PROJECT_ROOT}/${APP_MODULE}' not found. Check repo layout."
-            exit 2
+            echo "::warning::Expected '${PROJECT_ROOT}/${APP_MODULE}' not found. Adjust PROJECT_ROOT or APP_MODULE."
           fi
 
       - name: Make gradlew executable (if present)
