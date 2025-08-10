@@ -50,6 +50,7 @@ jobs:
           fi
 
       - name: Write settings.gradle(.kts) with repositories + include(":app")
+- name: Write settings.gradle(.kts) with repositories + include(":app")
         shell: bash
         run: |
           set -e
@@ -60,22 +61,24 @@ jobs:
             FILE="$ROOT/settings.gradle"
           fi
           cat > "$FILE" <<'EOF'
-pluginManagement {
-    repositories {
-        gradlePluginPortal()
-        google()
-        mavenCentral()
-    }
-}
-dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
-rootProject.name = "TitanApp"
-include(":app")
+          pluginManagement {
+              repositories {
+                  gradlePluginPortal()
+                  google()
+                  mavenCentral()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "TitanApp"
+          include(":app")
+EOF
+          echo "Wrote $FILE"
 EOF
           echo "Wrote $FILE"
 
