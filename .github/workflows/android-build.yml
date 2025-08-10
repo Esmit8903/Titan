@@ -65,7 +65,7 @@ jobs:
           cd "${PROJECT_ROOT}"
           ${{ steps.gradle.outputs.GRADLE_CMD }} --no-daemon :${APP_MODULE}:assembleDebug --stacktrace --info
 
-      - name: Debug: print project structure on failure
+      - name: "Debug: print project structure on failure"
         if: ${{ failure() }}
         shell: bash
         run: |
