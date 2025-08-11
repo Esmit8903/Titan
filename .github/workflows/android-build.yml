@@ -59,7 +59,6 @@ jobs:
           fi
 
           if [ "$have_gradle_in_root" = false ]; then
-            # If a Gradle project exists at repo root, adopt it into Titan/
             if [ -d "$APP" ] && { [ -f "settings.gradle.kts" ] || [ -f "settings.gradle" ]; }; then
               echo "Found Gradle project at repo root. Moving into $ROOT/ ..."
               mkdir -p "$ROOT"
@@ -219,31 +218,24 @@ jobs:
           "$HOME/gradle/gradle-${GRADLE_VERSION}/bin/gradle" -p "$ROOT" wrapper
           chmod +x "$ROOT/gradlew"
 
-      # ---------- Pre-flight guard (fast hints) ----------
       - name: Verify structure (fail-fast with hints)
         shell: bash
         run: |
           set -euo pipefail
           ROOT="${PROJECT_ROOT}"
           APP="${APP_MODULE}"
-          echo "== repo root =="
-          ls -la
-          echo "== quick tree (depth 3) =="
-          find "${ROOT}" -maxdepth 3 -print || true
+          echo "== repo root =="; ls -la
+          echo "== quick tree (depth 3) =="; find "${ROOT}" -maxdepth 3 -print || true
           echo "== Gradle files under ${ROOT} (depth 3) =="
           find "${ROOT}" -maxdepth 3 \( -name "settings.gradle*" -o -name "build.gradle*" \) -print || true
           if [ ! -x "${ROOT}/gradlew" ]; then
-            echo "Error: ${ROOT}/gradlew missing or not executable."
-            exit 1
+            echo "Error: ${ROOT}/gradlew missing or not executable."; exit 1
           fi
           if ! grep -q "include(\\\":${APP}\\\"\\|':${APP}'" "${ROOT}/settings.gradle"* 2>/dev/null; then
-            echo "Error: settings.gradle(.kts) does not include ':${APP}'."
-            echo "Hint: add include(':${APP}') to ${ROOT}/settings.gradle(.kts)."
-            exit 1
+            echo "Error: settings.gradle(.kts) does not include ':${APP}'."; exit 1
           fi
           if [ ! -d "${ROOT}/${APP}" ]; then
-            echo "Error: Expected module directory '${ROOT}/${APP}' not found."
-            exit 1
+            echo "Error: Expected module directory '${ROOT}/${APP}' not found."; exit 1
           fi
 
       - name: Build Debug APK
@@ -262,19 +254,18 @@ jobs:
 
       - name: Compute artifact name
         id: artifact
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
-          # Try the expected debug output first
           APK=$(ls ${PROJECT_ROOT}/${APP_MODULE}/build/outputs/apk/debug/*.apk 2>/dev/null | head -n1 || true)
-          # Fallback to any typical APK path so upload-artifact always gets a non-empty path
           if [ -z "$APK" ]; then
             APK="**/build/outputs/apk/**/*.apk"
           fi
           TS=$(date +%Y%m%d-%H%M%S)
           NAME="Titan-${APP_MODULE}-debug-${TS}.apk"
           echo "apk_name=${NAME}" >> "$GITHUB_OUTPUT"
-          echo "apk_path=${APK}" >> "$GITHUB_OUTPUT"
+          echo "apk_path=${APK}"  >> "$GITHUB_OUTPUT"
           echo "Artifact name: $NAME"
           echo "Artifact path: $APK"
 
