@@ -1,4 +1,4 @@
-name: Build Android (adopt or auto-create + robust artifact)
+name: Build Android (force JVM 17 + artifact)
 
 on:
   push:
@@ -7,15 +7,10 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     env:
-      PROJECT_ROOT: Titan
-      APP_MODULE: app
-      GRADLE_VERSION: "8.7"
-      AGP_VERSION: "8.5.2"
-      KOTLIN_VERSION: "1.9.24"
-      COMPILE_SDK: "34"
-      MIN_SDK: "24"
+      PROJECT_ROOT: Titan            # root folder of the project in the repo
+      APP_MODULE: app               # Gradle module name (folder under PROJECT_ROOT)
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
       - name: Checkout repo
@@ -25,249 +20,124 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install SDK components
         shell: bash
         run: |
-          sdkmanager "platforms;android-${COMPILE_SDK}" "build-tools;${COMPILE_SDK}.0.0"
+          set -euo pipefail
+          sudo mkdir -p "$ANDROID_SDK_ROOT"
+          sudo chown -R $USER:$USER "$ANDROID_SDK_ROOT"
+          echo "y" | sudo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses || true ||:
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0"
 
+      # Optional: unzip skeleton if present (kept because you used it before)
       - name: Unzip TitanApp_Rebuild.zip (if present)
         shell: bash
         run: |
           set -euo pipefail
           if [ -f TitanApp_Rebuild.zip ]; then
-            echo "Found TitanApp_Rebuild.zip - extracting into ./"
-            unzip -o TitanApp_Rebuild.zip -d .
+            echo "Found TitanApp_Rebuild.zip – extracting into ./"
+            unzip -o TitanApp_Rebuild.zip
           else
-            echo "No TitanApp_Rebuild.zip found - skipping."
+            echo "No TitanApp_Rebuild.zip found – skipping."
           fi
 
-      - name: Ensure/Adopt Gradle project under Titan/
+      # ---- Compatibility guard: force Kotlin & Java to JVM 17 without modifying your repo ----
+      - name: Force Java/Kotlin JVM target to 17 (Gradle init script)
         shell: bash
         run: |
           set -euo pipefail
-          ROOT="${PROJECT_ROOT}"
-          APP="${APP_MODULE}"
+          mkdir -p "${HOME}/.gradle/init.d"
+          cat > "${HOME}/.gradle/init.d/force17.gradle.kts" <<'EOF'
+          import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+          import org.gradle.api.tasks.compile.JavaCompile
 
-          have_gradle_in_root=false
-          if [ -d "$ROOT/$APP" ] && { [ -f "$ROOT/settings.gradle.kts" ] || [ -f "$ROOT/settings.gradle" ]; }; then
-            have_gradle_in_root=true
-          fi
-
-          if [ "$have_gradle_in_root" = false ]; then
-            if [ -d "$APP" ] && { [ -f "settings.gradle.kts" ] || [ -f "settings.gradle" ]; }; then
-              echo "Found Gradle project at repo root. Moving into $ROOT/ ..."
-              mkdir -p "$ROOT"
-              shopt -s dotglob
-              for p in app gradle gradlew gradlew.bat settings.gradle settings.gradle.kts build.gradle build.gradle.kts gradle.properties; do
-                if [ -e "$p" ]; then mv -f "$p" "$ROOT"/; fi
-              done
-              shopt -u dotglob
-              have_gradle_in_root=true
-            fi
-          fi
-
-          if [ "$have_gradle_in_root" = true ]; then
-            echo "Gradle project present under $ROOT"
-            if [ ! -x "$ROOT/gradlew" ]; then
-              echo "gradlew not found, generating wrapper with Gradle ${GRADLE_VERSION}"
-              mkdir -p "$HOME/gradle"
-              curl -sL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o "$HOME/gradle/gradle.zip"
-              unzip -q "$HOME/gradle/gradle.zip" -d "$HOME/gradle"
-              "$HOME/gradle/gradle-${GRADLE_VERSION}/bin/gradle" -p "$ROOT" wrapper
-            fi
-            chmod +x "$ROOT/gradlew"
-            exit 0
-          fi
-
-          echo "No Gradle project found. Creating a minimal app under $ROOT/$APP ..."
-          mkdir -p "$ROOT/$APP/src/main/java/com/example/helloworld"
-          mkdir -p "$ROOT/$APP/src/main/res/layout"
-          mkdir -p "$ROOT/$APP/src/main/res/values"
-
-          cat > "$ROOT/settings.gradle.kts" <<'EOF'
-          pluginManagement {
-            repositories {
-              gradlePluginPortal()
-              google()
-              mavenCentral()
-            }
-          }
-          dependencyResolutionManagement {
-            repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-            repositories {
-              google()
-              mavenCentral()
-            }
-          }
-          rootProject.name = "Titan"
-          include(":app")
-          EOF
-
-          echo "// root build kept minimal" > "$ROOT/build.gradle.kts"
-
-          cat > "$ROOT/$APP/build.gradle.kts" <<EOF
-          plugins {
-              id("com.android.application") version "${AGP_VERSION}"
-              id("org.jetbrains.kotlin.android") version "${KOTLIN_VERSION}"
-          }
-
-          android {
-              namespace = "com.example.helloworld"
-              compileSdk = ${COMPILE_SDK}.toInt()
-
-              defaultConfig {
-                  applicationId = "com.example.helloworld"
-                  minSdk = ${MIN_SDK}.toInt()
-                  targetSdk = ${COMPILE_SDK}.toInt()
-                  versionCode = 1
-                  versionName = "1.0"
+          allprojects {
+              tasks.withType(KotlinCompile::class.java).configureEach {
+                  kotlinOptions.jvmTarget = "17"
               }
-
-              buildTypes {
-                  release {
-                      isMinifyEnabled = false
-                      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-                  }
-              }
-
-              compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_17
-                  targetCompatibility = JavaVersion.VERSION_17
-              }
-              kotlinOptions {
-                  jvmTarget = "17"
-              }
-          }
-
-          dependencies {
-              implementation("androidx.core:core-ktx:1.13.1")
-              implementation("androidx.appcompat:appcompat:1.7.0")
-              implementation("com.google.android.material:material:1.12.0")
-              implementation("androidx.activity:activity-ktx:1.9.2")
-              implementation("androidx.constraintlayout:constraintlayout:2.1.4")
-          }
-          EOF
-
-          cat > "$ROOT/$APP/src/main/AndroidManifest.xml" <<'EOF'
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-            <application
-                android:label="Titan"
-                android:theme="@style/Theme.MaterialComponents.DayNight.NoActionBar">
-              <activity android:name=".MainActivity">
-                <intent-filter>
-                  <action android:name="android.intent.action.MAIN"/>
-                  <category android:name="android.intent.category.LAUNCHER"/>
-                </intent-filter>
-              </activity>
-            </application>
-          </manifest>
-          EOF
-
-          cat > "$ROOT/$APP/src/main/java/com/example/helloworld/MainActivity.kt" <<'EOF'
-          package com.example.helloworld
-
-          import android.os.Bundle
-          import androidx.appcompat.app.AppCompatActivity
-          import android.widget.TextView
-
-          class MainActivity : AppCompatActivity() {
-              override fun onCreate(savedInstanceState: Bundle?) {
-                  super.onCreate(savedInstanceState)
-                  val tv = TextView(this).apply { text = "Hello Titan!" }
-                  setContentView(tv)
+              tasks.withType(JavaCompile::class.java).configureEach {
+                  sourceCompatibility = "17"
+                  targetCompatibility = "17"
+                  // use --release 17 if available
+                  try {
+                      options.release.set(17)
+                  } catch (_: Throwable) { }
               }
           }
           EOF
 
-          cat > "$ROOT/$APP/src/main/res/layout/activity_main.xml" <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-              android:layout_width="match_parent"
-              android:layout_height="match_parent">
-              <TextView
-                  android:layout_width="wrap_content"
-                  android:layout_height="wrap_content"
-                  android:text="Hello Titan!"
-                  android:layout_gravity="center"/>
-          </FrameLayout>
-          EOF
-
-          cat > "$ROOT/$APP/src/main/res/values/strings.xml" <<'EOF'
-          <resources>
-              <string name="app_name">Titan</string>
-          </resources>
-          EOF
-
-          mkdir -p "$ROOT/gradle/wrapper"
-          cat > "$ROOT/gradle/wrapper/gradle-wrapper.properties" <<EOF
-          distributionBase=GRADLE_USER_HOME
-          distributionPath=wrapper/dists
-          distributionUrl=https\://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip
-          zipStoreBase=GRADLE_USER_HOME
-          zipStorePath=wrapper/dists
-          EOF
-
-          mkdir -p "$HOME/gradle"
-          curl -sL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o "$HOME/gradle/gradle.zip"
-          unzip -q "$HOME/gradle/gradle.zip" -d "$HOME/gradle"
-          "$HOME/gradle/gradle-${GRADLE_VERSION}/bin/gradle" -p "$ROOT" wrapper
-          chmod +x "$ROOT/gradlew"
-
-      - name: Verify structure (fail-fast with hints)
+      # Make wrapper executable if it exists
+      - name: Make gradlew executable (if present)
         shell: bash
+        working-directory: ${{ env.PROJECT_ROOT }}
         run: |
-          set -euo pipefail
-          ROOT="${PROJECT_ROOT}"
-          APP="${APP_MODULE}"
-          echo "== repo root =="; ls -la
-          echo "== quick tree (depth 3) =="; find "${ROOT}" -maxdepth 3 -print || true
-          echo "== Gradle files under ${ROOT} (depth 3) =="
-          find "${ROOT}" -maxdepth 3 \( -name "settings.gradle*" -o -name "build.gradle*" \) -print || true
-          if [ ! -x "${ROOT}/gradlew" ]; then
-            echo "Error: ${ROOT}/gradlew missing or not executable."; exit 1
-          fi
-          if ! grep -q "include(\\\":${APP}\\\"\\|':${APP}'" "${ROOT}/settings.gradle"* 2>/dev/null; then
-            echo "Error: settings.gradle(.kts) does not include ':${APP}'."; exit 1
-          fi
-          if [ ! -d "${ROOT}/${APP}" ]; then
-            echo "Error: Expected module directory '${ROOT}/${APP}' not found."; exit 1
+          if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
           fi
 
+      # Build (full log)
       - name: Build Debug APK
         shell: bash
         run: |
           set -euo pipefail
-          "${PROJECT_ROOT}/gradlew" -p "${PROJECT_ROOT}" --no-daemon :${APP_MODULE}:assembleDebug --stacktrace
+          cd "${PROJECT_ROOT}"
+          if [ -f ./gradlew ]; then
+            ./gradlew --no-daemon :${APP_MODULE}:assembleDebug -s --stacktrace
+          else
+            echo "gradlew not found at ${PROJECT_ROOT}/gradlew"
+            exit 2
+          fi
+
+      # ---- Helpful diagnostics on failure ----
+      - name: Summarize Gradle errors (best-effort)
+        if: failure()
+        shell: bash
+        run: |
+          echo "==== Looking for Kotlin/Java error lines ===="
+          grep -RIn --line-number --no-messages -E ": error:| FAILED|What went wrong|Execution failed for task" "${{ env.PROJECT_ROOT }}" || true
 
       - name: Show any APKs that exist (any path)
         if: always()
         shell: bash
         run: |
           set -e
-          echo "Searching for APKs..."
+          echo "Searching for APKs…"
           find . -type f -name "*.apk" -print || true
 
+      - name: Debug: print project structure on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "== repo root =="
+          ls -la
+          echo "== quick tree (depth 3) =="
+          find "${PROJECT_ROOT}" -maxdepth 3 -print
+
+      # ---- Compute artifact name + path (uses module-standard location) ----
       - name: Compute artifact name
         id: artifact
-        if: always()
         shell: bash
         run: |
           set -euo pipefail
-          APK=$(ls ${PROJECT_ROOT}/${APP_MODULE}/build/outputs/apk/debug/*.apk 2>/dev/null | head -n1 || true)
-          if [ -z "$APK" ]; then
-            APK="**/build/outputs/apk/**/*.apk"
+          # module-standard debug output location for APKs
+          APK_DIR="${{ env.PROJECT_ROOT }}/${{ env.APP_MODULE }}/build/outputs/apk/debug"
+          if [ ! -d "${APK_DIR}" ]; then
+            echo "APK directory not found: ${APK_DIR}"
+            exit 1
           fi
+          APK=$(ls -1 "${APK_DIR}"/*.apk | head -n 1 || true)
+          if [ -z "${APK}" ]; then
+            echo "No APKs found in ${APK_DIR}"
+            exit 1
+          fi
+          # final, nice artifact name
           TS=$(date +%Y%m%d-%H%M%S)
-          NAME="Titan-${APP_MODULE}-debug-${TS}.apk"
+          NAME="Titan-${{ env.APP_MODULE }}-debug-${TS}.apk"
           echo "apk_name=${NAME}" >> "$GITHUB_OUTPUT"
           echo "apk_path=${APK}"  >> "$GITHUB_OUTPUT"
-          echo "Artifact name: $NAME"
-          echo "Artifact path: $APK"
+          echo "Computed: name=${NAME}, path=${APK}"
 
       - name: Upload APK artifact
         if: always()
