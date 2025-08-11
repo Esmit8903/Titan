@@ -11,6 +11,11 @@ jobs:
     env:
       PROJECT_ROOT: Titan
       APP_MODULE: app
+      GRADLE_VERSION: "8.7"
+      AGP_VERSION: "8.5.2"
+      KOTLIN_VERSION: "1.9.24"
+      COMPILE_SDK: "34"
+      MIN_SDK: "24"
 
     steps:
       - name: Checkout repo
@@ -20,21 +25,23 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: '17'
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Install SDK components
-        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+        shell: bash
+        run: |
+          sdkmanager "platforms;android-${COMPILE_SDK}" "build-tools;${COMPILE_SDK}.0.0"
 
-      # Optional: unzip a project skeleton if you add TitanApp_Rebuild.zip
+      # Optional: unzip a skeleton if you uploaded TitanApp_Rebuild.zip at repo root
       - name: Unzip TitanApp_Rebuild.zip (if present)
         shell: bash
         run: |
           set -euo pipefail
           if [ -f TitanApp_Rebuild.zip ]; then
-            echo "Found TitanApp_Rebuild.zip — extracting into ./Titan ..."
+            echo "Found TitanApp_Rebuild.zip — extracting into ./"
             unzip -o TitanApp_Rebuild.zip -d .
           else
             echo "No TitanApp_Rebuild.zip found — skipping."
@@ -50,7 +57,7 @@ jobs:
           APP="${APP_MODULE}"
 
           if [ -d "$ROOT/$APP" ] && [ -f "$ROOT/settings.gradle.kts" ]; then
-            echo "Gradle project already exists at $ROOT."
+            echo "Gradle project already exists at $ROOT"
             exit 0
           fi
 
@@ -79,58 +86,66 @@ jobs:
           include(":app")
           EOF
 
-          cat > "$ROOT/build.gradle.kts" <<'EOF'
-          // root buildscript (mostly empty for simple projects)
-          EOF
+          # Minimal root build file
+          echo "// root build kept minimal" > "$ROOT/build.gradle.kts"
 
-          cat > "$ROOT/$APP/build.gradle.kts" <<'EOF'
+          # app/build.gradle.kts
+          cat > "$ROOT/$APP/build.gradle.kts" <<EOF
           plugins {
-            id("com.android.application")
-            id("org.jetbrains.kotlin.android")
+              id("com.android.application") version "${AGP_VERSION}"
+              id("org.jetbrains.kotlin.android") version "${KOTLIN_VERSION}"
           }
 
           android {
-            namespace = "com.example.helloworld"
-            compileSdk = 34
+              namespace = "com.example.helloworld"
+              compileSdk = ${COMPILE_SDK}.toInt()
 
-            defaultConfig {
-              applicationId = "com.example.helloworld"
-              minSdk = 24
-              targetSdk = 34
-              versionCode = 1
-              versionName = "1.0"
-            }
-
-            buildTypes {
-              release {
-                isMinifyEnabled = false
-                proguardFiles(
-                  getDefaultProguardFile("proguard-android-optimize.txt"),
-                  "proguard-rules.pro"
-                )
+              defaultConfig {
+                  applicationId = "com.example.helloworld"
+                  minSdk = ${MIN_SDK}.toInt()
+                  targetSdk = ${COMPILE_SDK}.toInt()
+                  versionCode = 1
+                  versionName = "1.0"
               }
-            }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+              buildFeatures { viewBinding = true }
           }
 
           dependencies {
-            implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")
-            implementation("androidx.core:core-ktx:1.13.1")
-            implementation("androidx.appcompat:appcompat:1.7.0")
-            implementation("com.google.android.material:material:1.12.0")
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.appcompat:appcompat:1.7.0")
+              implementation("com.google.android.material:material:1.12.0")
+              implementation("androidx.activity:activity-ktx:1.9.2")
+              implementation("androidx.constraintlayout:constraintlayout:2.1.4")
           }
           EOF
 
           cat > "$ROOT/$APP/src/main/AndroidManifest.xml" <<'EOF'
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-              package="com.example.helloworld">
-              <application android:label="HelloWorld">
-                  <activity android:name=".MainActivity">
-                      <intent-filter>
-                          <action android:name="android.intent.action.MAIN" />
-                          <category android:name="android.intent.category.LAUNCHER" />
-                      </intent-filter>
-                  </activity>
-              </application>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <application
+                android:label="Titan"
+                android:theme="@style/Theme.MaterialComponents.DayNight.NoActionBar">
+              <activity android:name=".MainActivity">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN"/>
+                  <category android:name="android.intent.category.LAUNCHER"/>
+                </intent-filter>
+              </activity>
+            </application>
           </manifest>
           EOF
 
@@ -139,34 +154,57 @@ jobs:
 
           import android.os.Bundle
           import androidx.appcompat.app.AppCompatActivity
+          import android.widget.TextView
 
           class MainActivity : AppCompatActivity() {
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
+                  val tv = TextView(this).apply { text = "Hello Titan!" }
+                  setContentView(tv)
               }
           }
           EOF
 
           cat > "$ROOT/$APP/src/main/res/layout/activity_main.xml" <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
           <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
               android:layout_width="match_parent"
-              android:layout_height="match_parent" />
+              android:layout_height="match_parent">
+              <TextView
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:text="Hello Titan!"
+                  android:layout_gravity="center"/>
+          </FrameLayout>
           EOF
 
           cat > "$ROOT/$APP/src/main/res/values/strings.xml" <<'EOF'
           <resources>
-              <string name="app_name">HelloWorld</string>
+              <string name="app_name">Titan</string>
           </resources>
           EOF
 
-          # use Gradle wrapper
-          pushd "$ROOT" >/dev/null
-          gradle wrapper --gradle-version 8.7
-          popd >/dev/null
+          # Gradle wrapper properties
+          mkdir -p "$ROOT/gradle/wrapper"
+          cat > "$ROOT/gradle/wrapper/gradle-wrapper.properties" <<EOF
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOF
+
+          # Bootstrap wrapper
+          mkdir -p "$HOME/gradle"
+          curl -sL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o "$HOME/gradle/gradle.zip"
+          unzip -q "$HOME/gradle/gradle.zip" -d "$HOME/gradle"
+          "$HOME/gradle/gradle-${GRADLE_VERSION}/bin/gradle" -p "$ROOT" wrapper
+
+          chmod +x "$ROOT/gradlew"
 
       - name: Make gradlew executable (if present)
-        working-directory: ${{ env.PROJECT_ROOT }}
         shell: bash
+        working-directory: ${{ env.PROJECT_ROOT }}
         run: |
           if [ -f ./gradlew ]; then chmod +x ./gradlew; fi
 
@@ -174,8 +212,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd "${PROJECT_ROOT}"
-          ./gradlew --no-daemon :${APP_MODULE}:assembleDebug
+          "${PROJECT_ROOT}/gradlew" -p "${PROJECT_ROOT}" --no-daemon :${APP_MODULE}:assembleDebug --stacktrace
 
       # Handy hints if things fail
       - name: Summarize Gradle errors (best-effort)
@@ -183,7 +220,7 @@ jobs:
         shell: bash
         run: |
           echo "==== Looking for Kotlin/Java error lines ===="
-          grep -RIn --line-number --no-messages -E ": error:| FAILED" "${PROJECT_ROOT}" || true
+          grep -RIn --line-number --no-messages -E ": error:| FAILURE:| BUILD FAILED|Exception" "${PROJECT_ROOT}" || true
 
       - name: Show any APKs that exist (any path)
         if: always()
@@ -193,7 +230,7 @@ jobs:
           echo "Searching for APKs…"
           find . -type f -name "*.apk" -print || true
 
-      - name: "Debug: print project structure on failure"
+      - name: Debug: print project structure on failure
         if: failure()
         shell: bash
         run: |
@@ -202,24 +239,25 @@ jobs:
           echo "== quick tree (depth 3) =="
           find "${PROJECT_ROOT}" -maxdepth 3 -print
           echo "== Gradle files =="
-          find "${PROJECT_ROOT}" -maxdepth 3 \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" -o -name "settings.gradle.kts" \) -print
+          find "${PROJECT_ROOT}" -maxdepth 3 \( -name "build.gradle*" -o -name "settings.gradle*" \) -print
 
-      # ---------- Automatic artifact name ----------
       - name: Compute artifact name
-        id: artifact_name
+        id: artifact
         shell: bash
         run: |
           set -euo pipefail
-          DATE=$(date -u +%Y%m%d-%H%M%S)
-          SHORT_SHA=${GITHUB_SHA::7}
-          echo "ARTIFACT_NAME=titan-${APP_MODULE}-debug-${DATE}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          APK=$(ls ${PROJECT_ROOT}/${APP_MODULE}/build/outputs/apk/debug/*.apk 2>/dev/null | head -n1 || true)
+          TS=$(date +%Y%m%d-%H%M%S)
+          NAME="Titan-${APP_MODULE}-debug-${TS}.apk"
+          echo "apk_name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "apk_path=${APK}" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.artifact_name.outputs.ARTIFACT_NAME }}
+          name: ${{ steps.artifact.outputs.apk_name }}
           path: |
-            ${{ env.PROJECT_ROOT }}/${{ env.APP_MODULE }}/build/outputs/**/*.apk
+            ${{ steps.artifact.outputs.apk_path }}
             **/build/outputs/apk/**/*.apk
           if-no-files-found: warn
