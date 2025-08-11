@@ -1,8 +1,8 @@
-name: Build Android (autocreate app if missing)
+name: Build Android (auto-create app if missing)
 
 on:
-  workflow_dispatch:
   push:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -13,23 +13,35 @@ jobs:
       APP_MODULE: app
 
     steps:
-      - name: "Checkout repo"
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      # Optional: unzip your project skeleton if you add TitanApp_Rebuild.zip
-      - name: "Unzip TitanApp_Rebuild.zip (if present)"
+      - name: Set up Java 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK components
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      # ---------------- Optional skeleton unzip ----------------
+      - name: Unzip TitanApp_Rebuild.zip (if present)
         shell: bash
         run: |
           set -euo pipefail
           if [ -f TitanApp_Rebuild.zip ]; then
-            echo "Found TitanApp_Rebuild.zip — extracting..."
-            unzip -o TitanApp_Rebuild.zip -d .
+            echo "Found TitanApp_Rebuild.zip — extracting into ./Titan ..."
+            unzip -o TitanApp_Rebuild.zip -d Titan
           else
             echo "No TitanApp_Rebuild.zip found — skipping."
           fi
 
-      # Autocreate a tiny Android Gradle project if Titan/app doesn't exist
-      - name: "Ensure Gradle project exists (auto-generate tiny app)"
+      # --------- Auto-create a tiny app if none exists ----------
+      - name: Ensure Gradle project exists (auto-generate tiny app if needed)
         shell: bash
         run: |
           set -euo pipefail
@@ -37,24 +49,25 @@ jobs:
           ROOT="${PROJECT_ROOT}"
           APP="${APP_MODULE}"
 
-          if [ -d "$ROOT/$APP" ] && [ -f "$ROOT/settings.gradle.kts" ]; then
-            echo "Existing Gradle project detected at $ROOT/$APP"
+          # Already a Gradle project?
+          if [ -d "$ROOT/$APP" ] && [ -f "$ROOT/settings.gradle" -o -f "$ROOT/settings.gradle.kts" ]; then
+            echo "Gradle project already exists at $ROOT."
             exit 0
           fi
 
-          echo "No Gradle project found. Creating a minimal Android app under $ROOT/$APP ..."
+          echo "No Gradle project found — creating a minimal Kotlin Android app under $ROOT/$APP ..."
 
           mkdir -p "$ROOT/$APP/src/main/java/com/example/helloworld"
-          mkdir -p "$ROOT/$APP/src/main/res/layout"
-          mkdir -p "$ROOT/$APP/src/main/res/values"
+          mkdir -p "$ROOT/$APP/src/main/res"
+          mkdir -p "$ROOT/$APP/src/main"
 
-          # settings.gradle.kts
-          cat > "$ROOT/settings.gradle.kts" <<'EOF'
+          # ---------------- settings.gradle.kts ----------------
+          cat <<'EOF' > "$ROOT/settings.gradle.kts"
           pluginManagement {
             repositories {
-              gradlePluginPortal()
               google()
               mavenCentral()
+              gradlePluginPortal()
             }
           }
           dependencyResolutionManagement {
@@ -68,28 +81,14 @@ jobs:
           include(":app")
           EOF
 
-          # build.gradle.kts (root)
-          cat > "$ROOT/build.gradle.kts" <<'EOF'
-          buildscript {
-            repositories {
-              google()
-              mavenCentral()
-            }
-            dependencies {
-              classpath("com.android.tools.build:gradle:8.2.2")
-              classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.10")
-            }
-          }
-          allprojects {
-            repositories {
-              google()
-              mavenCentral()
-            }
-          }
+          # ---------------- root build.gradle.kts ----------------
+          cat <<'EOF' > "$ROOT/build.gradle.kts"
+          // Root build file can be minimal for AGP 8+
+          plugins { }
           EOF
 
-          # app/build.gradle.kts
-          cat > "$ROOT/$APP/build.gradle.kts" <<'EOF'
+          # ---------------- app/build.gradle.kts ----------------
+          cat <<'EOF' > "$ROOT/$APP/build.gradle.kts"
           plugins {
             id("com.android.application")
             id("org.jetbrains.kotlin.android")
@@ -116,26 +115,19 @@ jobs:
                 )
               }
             }
-
-            compileOptions {
-              sourceCompatibility = JavaVersion.VERSION_17
-              targetCompatibility = JavaVersion.VERSION_17
-            }
-            kotlinOptions {
-              jvmTarget = "17"
-            }
           }
 
           dependencies {
+            implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")
             implementation("androidx.core:core-ktx:1.13.1")
             implementation("androidx.appcompat:appcompat:1.7.0")
             implementation("com.google.android.material:material:1.12.0")
           }
           EOF
 
-          # AndroidManifest.xml
-          cat > "$ROOT/$APP/src/main/AndroidManifest.xml" <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
+          # ---------------- AndroidManifest.xml ----------------
+          mkdir -p "$ROOT/$APP/src/main"
+          cat <<'EOF' > "$ROOT/$APP/src/main/AndroidManifest.xml"
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
               package="com.example.helloworld">
             <application
@@ -143,9 +135,7 @@ jobs:
                 android:icon="@mipmap/ic_launcher"
                 android:allowBackup="true"
                 android:supportsRtl="true">
-              <activity
-                  android:name="com.example.helloworld.MainActivity"
-                  android:exported="true">
+              <activity android:name=".MainActivity">
                 <intent-filter>
                   <action android:name="android.intent.action.MAIN" />
                   <category android:name="android.intent.category.LAUNCHER" />
@@ -155,73 +145,10 @@ jobs:
           </manifest>
           EOF
 
-          # MainActivity.kt
-          cat > "$ROOT/$APP/src/main/java/com/example/helloworld/MainActivity.kt" <<'EOF'
+          # ---------------- MainActivity.kt ----------------
+          cat <<'EOF' > "$ROOT/$APP/src/main/java/com/example/helloworld/MainActivity.kt"
           package com.example.helloworld
 
           import android.os.Bundle
-          import androidx.appcompat.app.AppCompatActivity
-
-          class MainActivity : AppCompatActivity() {
-            override fun onCreate(savedInstanceState: Bundle?) {
-              super.onCreate(savedInstanceState)
-              setContentView(R.layout.activity_main)
-            }
-          }
-          EOF
-
-          # activity_main.xml
-          cat > "$ROOT/$APP/src/main/res/layout/activity_main.xml" <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-              android:layout_width="match_parent"
-              android:layout_height="match_parent"
-              android:gravity="center"
-              android:orientation="vertical">
-            <TextView
-              android:layout_width="wrap_content"
-              android:layout_height="wrap_content"
-              android:text="Hello Titan!" />
-          </LinearLayout>
-          EOF
-
-          # strings.xml
-          mkdir -p "$ROOT/$APP/src/main/res/values"
-          cat > "$ROOT/$APP/src/main/res/values/strings.xml" <<'EOF'
-          <resources>
-            <string name="app_name">Titan</string>
-          </resources>
-          EOF
-
-      - name: "Set up Java 17"
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: "Set up Android SDK"
-        uses: android-actions/setup-android@v3
-
-      - name: "Install SDK components"
-        shell: bash
-        run: |
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
-
-      - name: "Make gradlew executable (if present)"
-        working-directory: ${{ env.PROJECT_ROOT }}
-        shell: bash
-        run: |
-          if [ -f ./gradlew ]; then chmod +x ./gradlew; fi
-
-      - name: "Pick Gradle (wrapper or 8.7)"
-        id: gradle
-        shell: bash
-        run: |
-          set -e
-          cd "${PROJECT_ROOT}"
-          if [ -f ./gradlew ]; then
-            echo "GRADLE_CMD=./gradlew" >> "$GITHUB_OUTPUT"
-          else
-            cd ..
-            curl -L -o gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
-            unzip -q gradle.zip -d "$HOME"
+          import android.widget.TextView
+          import androidx.activity.Component
