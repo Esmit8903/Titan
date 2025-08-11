@@ -207,7 +207,7 @@ jobs:
           echo "Searching for APKs…"
           find . -type f -name "*.apk" -print || true
 
-      - name: Debug: print project structure on failure
+      - name: "Debug: print project structure on failure"
         if: failure()
         shell: bash
         run: |
