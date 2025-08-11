@@ -35,19 +35,17 @@ jobs:
         run: |
           sdkmanager "platforms;android-${COMPILE_SDK}" "build-tools;${COMPILE_SDK}.0.0"
 
-      # Optional: unzip a skeleton if you uploaded TitanApp_Rebuild.zip at repo root
       - name: Unzip TitanApp_Rebuild.zip (if present)
         shell: bash
         run: |
           set -euo pipefail
           if [ -f TitanApp_Rebuild.zip ]; then
-            echo "Found TitanApp_Rebuild.zip — extracting into ./"
+            echo "Found TitanApp_Rebuild.zip - extracting into ./"
             unzip -o TitanApp_Rebuild.zip -d .
           else
-            echo "No TitanApp_Rebuild.zip found — skipping."
+            echo "No TitanApp_Rebuild.zip found - skipping."
           fi
 
-      # Create a tiny Gradle Android project if Titan/app is missing
       - name: Ensure Gradle project exists (auto-generate tiny app)
         shell: bash
         run: |
@@ -86,10 +84,8 @@ jobs:
           include(":app")
           EOF
 
-          # Minimal root build file
           echo "// root build kept minimal" > "$ROOT/build.gradle.kts"
 
-          # app/build.gradle.kts
           cat > "$ROOT/$APP/build.gradle.kts" <<EOF
           plugins {
               id("com.android.application") version "${AGP_VERSION}"
@@ -184,7 +180,6 @@ jobs:
           </resources>
           EOF
 
-          # Gradle wrapper properties
           mkdir -p "$ROOT/gradle/wrapper"
           cat > "$ROOT/gradle/wrapper/gradle-wrapper.properties" <<EOF
           distributionBase=GRADLE_USER_HOME
@@ -194,7 +189,6 @@ jobs:
           zipStorePath=wrapper/dists
           EOF
 
-          # Bootstrap wrapper
           mkdir -p "$HOME/gradle"
           curl -sL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o "$HOME/gradle/gradle.zip"
           unzip -q "$HOME/gradle/gradle.zip" -d "$HOME/gradle"
@@ -214,7 +208,6 @@ jobs:
           set -euo pipefail
           "${PROJECT_ROOT}/gradlew" -p "${PROJECT_ROOT}" --no-daemon :${APP_MODULE}:assembleDebug --stacktrace
 
-      # Handy hints if things fail
       - name: Summarize Gradle errors (best-effort)
         if: failure()
         shell: bash
@@ -227,10 +220,10 @@ jobs:
         shell: bash
         run: |
           set -e
-          echo "Searching for APKs…"
+          echo "Searching for APKs..."
           find . -type f -name "*.apk" -print || true
 
-      - name: Debug: print project structure on failure
+      - name: "Debug: print project structure on failure"
         if: failure()
         shell: bash
         run: |
