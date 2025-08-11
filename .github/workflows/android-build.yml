@@ -25,7 +25,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -46,7 +46,7 @@ jobs:
             echo "No TitanApp_Rebuild.zip found - skipping."
           fi
 
-      - name: Ensure Gradle project exists (auto-generate tiny app)
+      - name: Ensure Gradle project exists (auto-generate tiny app if needed)
         shell: bash
         run: |
           set -euo pipefail
@@ -118,7 +118,6 @@ jobs:
               kotlinOptions {
                   jvmTarget = "17"
               }
-              buildFeatures { viewBinding = true }
           }
 
           dependencies {
@@ -190,67 +189,4 @@ jobs:
           EOF
 
           mkdir -p "$HOME/gradle"
-          curl -sL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o "$HOME/gradle/gradle.zip"
-          unzip -q "$HOME/gradle/gradle.zip" -d "$HOME/gradle"
-          "$HOME/gradle/gradle-${GRADLE_VERSION}/bin/gradle" -p "$ROOT" wrapper
-
-          chmod +x "$ROOT/gradlew"
-
-      - name: Make gradlew executable (if present)
-        shell: bash
-        working-directory: ${{ env.PROJECT_ROOT }}
-        run: |
-          if [ -f ./gradlew ]; then chmod +x ./gradlew; fi
-
-      - name: Build Debug APK (capture full log)
-        shell: bash
-        run: |
-          set -euo pipefail
-          "${PROJECT_ROOT}/gradlew" -p "${PROJECT_ROOT}" --no-daemon :${APP_MODULE}:assembleDebug --stacktrace
-
-      - name: Summarize Gradle errors (best-effort)
-        if: failure()
-        shell: bash
-        run: |
-          echo "==== Looking for Kotlin/Java error lines ===="
-          grep -RIn --line-number --no-messages -E ": error:| FAILURE:| BUILD FAILED|Exception" "${PROJECT_ROOT}" || true
-
-      - name: Show any APKs that exist (any path)
-        if: always()
-        shell: bash
-        run: |
-          set -e
-          echo "Searching for APKs..."
-          find . -type f -name "*.apk" -print || true
-
-      - name: "Debug: print project structure on failure"
-        if: failure()
-        shell: bash
-        run: |
-          echo "== repo root =="
-          ls -la
-          echo "== quick tree (depth 3) =="
-          find "${PROJECT_ROOT}" -maxdepth 3 -print
-          echo "== Gradle files =="
-          find "${PROJECT_ROOT}" -maxdepth 3 \( -name "build.gradle*" -o -name "settings.gradle*" \) -print
-
-      - name: Compute artifact name
-        id: artifact
-        shell: bash
-        run: |
-          set -euo pipefail
-          APK=$(ls ${PROJECT_ROOT}/${APP_MODULE}/build/outputs/apk/debug/*.apk 2>/dev/null | head -n1 || true)
-          TS=$(date +%Y%m%d-%H%M%S)
-          NAME="Titan-${APP_MODULE}-debug-${TS}.apk"
-          echo "apk_name=${NAME}" >> "$GITHUB_OUTPUT"
-          echo "apk_path=${APK}" >> "$GITHUB_OUTPUT"
-
-      - name: Upload APK artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.artifact.outputs.apk_name }}
-          path: |
-            ${{ steps.artifact.outputs.apk_path }}
-            **/build/outputs/apk/**/*.apk
-          if-no-files-found: warn
+          curl -sL "https://services.gradle.org/distributions/
