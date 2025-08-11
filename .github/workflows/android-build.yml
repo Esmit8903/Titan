@@ -1,4 +1,4 @@
-name: Build Android (adopt or auto-create project)
+name: Build Android (adopt or auto-create + robust artifact)
 
 on:
   push:
@@ -53,27 +53,26 @@ jobs:
           ROOT="${PROJECT_ROOT}"
           APP="${APP_MODULE}"
 
-          have_root_gradle=false
+          have_gradle_in_root=false
           if [ -d "$ROOT/$APP" ] && { [ -f "$ROOT/settings.gradle.kts" ] || [ -f "$ROOT/settings.gradle" ]; }; then
-            have_root_gradle=true
+            have_gradle_in_root=true
           fi
 
-          if [ "$have_root_gradle" = false ]; then
-            # Does a Gradle project exist at the repo root?
+          if [ "$have_gradle_in_root" = false ]; then
+            # If a Gradle project exists at repo root, adopt it into Titan/
             if [ -d "$APP" ] && { [ -f "settings.gradle.kts" ] || [ -f "settings.gradle" ]; }; then
-              echo "Found Gradle project at repo root. Moving it into $ROOT/ ..."
+              echo "Found Gradle project at repo root. Moving into $ROOT/ ..."
               mkdir -p "$ROOT"
               shopt -s dotglob
-              # Move common Gradle project bits into Titan/
               for p in app gradle gradlew gradlew.bat settings.gradle settings.gradle.kts build.gradle build.gradle.kts gradle.properties; do
                 if [ -e "$p" ]; then mv -f "$p" "$ROOT"/; fi
               done
               shopt -u dotglob
-              have_root_gradle=true
+              have_gradle_in_root=true
             fi
           fi
 
-          if [ "$have_root_gradle" = true ]; then
+          if [ "$have_gradle_in_root" = true ]; then
             echo "Gradle project present under $ROOT"
             if [ ! -x "$ROOT/gradlew" ]; then
               echo "gradlew not found, generating wrapper with Gradle ${GRADLE_VERSION}"
@@ -86,7 +85,7 @@ jobs:
             exit 0
           fi
 
-          echo "No Gradle project found anywhere. Creating a minimal app under $ROOT/$APP ..."
+          echo "No Gradle project found. Creating a minimal app under $ROOT/$APP ..."
           mkdir -p "$ROOT/$APP/src/main/java/com/example/helloworld"
           mkdir -p "$ROOT/$APP/src/main/res/layout"
           mkdir -p "$ROOT/$APP/src/main/res/values"
@@ -220,6 +219,33 @@ jobs:
           "$HOME/gradle/gradle-${GRADLE_VERSION}/bin/gradle" -p "$ROOT" wrapper
           chmod +x "$ROOT/gradlew"
 
+      # ---------- Pre-flight guard (fast hints) ----------
+      - name: Verify structure (fail-fast with hints)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="${PROJECT_ROOT}"
+          APP="${APP_MODULE}"
+          echo "== repo root =="
+          ls -la
+          echo "== quick tree (depth 3) =="
+          find "${ROOT}" -maxdepth 3 -print || true
+          echo "== Gradle files under ${ROOT} (depth 3) =="
+          find "${ROOT}" -maxdepth 3 \( -name "settings.gradle*" -o -name "build.gradle*" \) -print || true
+          if [ ! -x "${ROOT}/gradlew" ]; then
+            echo "Error: ${ROOT}/gradlew missing or not executable."
+            exit 1
+          fi
+          if ! grep -q "include(\\\":${APP}\\\"\\|':${APP}'" "${ROOT}/settings.gradle"* 2>/dev/null; then
+            echo "Error: settings.gradle(.kts) does not include ':${APP}'."
+            echo "Hint: add include(':${APP}') to ${ROOT}/settings.gradle(.kts)."
+            exit 1
+          fi
+          if [ ! -d "${ROOT}/${APP}" ]; then
+            echo "Error: Expected module directory '${ROOT}/${APP}' not found."
+            exit 1
+          fi
+
       - name: Build Debug APK
         shell: bash
         run: |
@@ -239,19 +265,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Try the expected debug output first
           APK=$(ls ${PROJECT_ROOT}/${APP_MODULE}/build/outputs/apk/debug/*.apk 2>/dev/null | head -n1 || true)
+          # Fallback to any typical APK path so upload-artifact always gets a non-empty path
           if [ -z "$APK" ]; then
-            APK=$(find . -type f -path "*/build/outputs/apk/*/*.apk" | head -n1 || true)
-          fi
-          if [ -z "$APK" ]; then
-            echo "No APK found. Build may have failed earlier."
-          else
-            echo "Found APK at: $APK"
+            APK="**/build/outputs/apk/**/*.apk"
           fi
           TS=$(date +%Y%m%d-%H%M%S)
           NAME="Titan-${APP_MODULE}-debug-${TS}.apk"
           echo "apk_name=${NAME}" >> "$GITHUB_OUTPUT"
           echo "apk_path=${APK}" >> "$GITHUB_OUTPUT"
+          echo "Artifact name: $NAME"
+          echo "Artifact path: $APK"
 
       - name: Upload APK artifact
         if: always()
