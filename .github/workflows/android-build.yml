@@ -1,4 +1,4 @@
-name: Build Android (auto-create app if missing)
+name: Build Android (adopt or auto-create project)
 
 on:
   push:
@@ -46,21 +46,47 @@ jobs:
             echo "No TitanApp_Rebuild.zip found - skipping."
           fi
 
-      - name: Ensure Gradle project exists (auto-generate tiny app if needed)
+      - name: Ensure/Adopt Gradle project under Titan/
         shell: bash
         run: |
           set -euo pipefail
-
           ROOT="${PROJECT_ROOT}"
           APP="${APP_MODULE}"
 
-          if [ -d "$ROOT/$APP" ] && [ -f "$ROOT/settings.gradle.kts" ]; then
-            echo "Gradle project already exists at $ROOT"
+          have_root_gradle=false
+          if [ -d "$ROOT/$APP" ] && { [ -f "$ROOT/settings.gradle.kts" ] || [ -f "$ROOT/settings.gradle" ]; }; then
+            have_root_gradle=true
+          fi
+
+          if [ "$have_root_gradle" = false ]; then
+            # Does a Gradle project exist at the repo root?
+            if [ -d "$APP" ] && { [ -f "settings.gradle.kts" ] || [ -f "settings.gradle" ]; }; then
+              echo "Found Gradle project at repo root. Moving it into $ROOT/ ..."
+              mkdir -p "$ROOT"
+              shopt -s dotglob
+              # Move common Gradle project bits into Titan/
+              for p in app gradle gradlew gradlew.bat settings.gradle settings.gradle.kts build.gradle build.gradle.kts gradle.properties; do
+                if [ -e "$p" ]; then mv -f "$p" "$ROOT"/; fi
+              done
+              shopt -u dotglob
+              have_root_gradle=true
+            fi
+          fi
+
+          if [ "$have_root_gradle" = true ]; then
+            echo "Gradle project present under $ROOT"
+            if [ ! -x "$ROOT/gradlew" ]; then
+              echo "gradlew not found, generating wrapper with Gradle ${GRADLE_VERSION}"
+              mkdir -p "$HOME/gradle"
+              curl -sL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o "$HOME/gradle/gradle.zip"
+              unzip -q "$HOME/gradle/gradle.zip" -d "$HOME/gradle"
+              "$HOME/gradle/gradle-${GRADLE_VERSION}/bin/gradle" -p "$ROOT" wrapper
+            fi
+            chmod +x "$ROOT/gradlew"
             exit 0
           fi
 
-          echo "No Gradle project found. Creating a minimal Android app under $ROOT/$APP ..."
-
+          echo "No Gradle project found anywhere. Creating a minimal app under $ROOT/$APP ..."
           mkdir -p "$ROOT/$APP/src/main/java/com/example/helloworld"
           mkdir -p "$ROOT/$APP/src/main/res/layout"
           mkdir -p "$ROOT/$APP/src/main/res/values"
@@ -189,4 +215,48 @@ jobs:
           EOF
 
           mkdir -p "$HOME/gradle"
-          curl -sL "https://services.gradle.org/distributions/
+          curl -sL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o "$HOME/gradle/gradle.zip"
+          unzip -q "$HOME/gradle/gradle.zip" -d "$HOME/gradle"
+          "$HOME/gradle/gradle-${GRADLE_VERSION}/bin/gradle" -p "$ROOT" wrapper
+          chmod +x "$ROOT/gradlew"
+
+      - name: Build Debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${PROJECT_ROOT}/gradlew" -p "${PROJECT_ROOT}" --no-daemon :${APP_MODULE}:assembleDebug --stacktrace
+
+      - name: Show any APKs that exist (any path)
+        if: always()
+        shell: bash
+        run: |
+          set -e
+          echo "Searching for APKs..."
+          find . -type f -name "*.apk" -print || true
+
+      - name: Compute artifact name
+        id: artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=$(ls ${PROJECT_ROOT}/${APP_MODULE}/build/outputs/apk/debug/*.apk 2>/dev/null | head -n1 || true)
+          if [ -z "$APK" ]; then
+            APK=$(find . -type f -path "*/build/outputs/apk/*/*.apk" | head -n1 || true)
+          fi
+          if [ -z "$APK" ]; then
+            echo "No APK found. Build may have failed earlier."
+          else
+            echo "Found APK at: $APK"
+          fi
+          TS=$(date +%Y%m%d-%H%M%S)
+          NAME="Titan-${APP_MODULE}-debug-${TS}.apk"
+          echo "apk_name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "apk_path=${APK}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.apk_name }}
+          path: ${{ steps.artifact.outputs.apk_path }}
+          if-no-files-found: warn
